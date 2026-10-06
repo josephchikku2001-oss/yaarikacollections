@@ -44,6 +44,7 @@ import { MultiLayerProductCreator } from './MultiLayerProductCreator';
 import { BannerSliderManager } from './BannerSliderManager';
 import { SAMPLE_SHOWCASE_PRODUCTS } from '../data/sampleShowcase';
 import { GitHubStorageService } from '../services/githubStorage';
+import { GoogleSheetsService } from '../services/googleSheetsStorage';
 import { 
   isProductInStock, 
   getSizeStockCount, 
@@ -85,7 +86,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isFirebaseAccountCreation, setIsFirebaseAccountCreation] = useState<boolean>(false);
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<'products' | 'add' | 'excel' | 'bulk' | 'banners' | 'inquiries' | 'github-verify' | 'settings'>('products');
+  const [activeTab, setActiveTab] = useState<'products' | 'add' | 'excel' | 'bulk' | 'banners' | 'inquiries' | 'github-verify' | 'googlesheets' | 'settings'>('products');
 
   // GitHub Sync & Verification Tab State
   const [ghTokenInput, setGhTokenInput] = useState<string>(() => GitHubStorageService.getConfig().token || '');
@@ -93,10 +94,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [ghVerifyResult, setGhVerifyResult] = useState<any>(null);
   const [isVerifyingGh, setIsVerifyingGh] = useState<boolean>(false);
 
+  // Google Sheets Sync Tab State
+  const [gsWebAppUrlInput, setGsWebAppUrlInput] = useState<string>(() => GoogleSheetsService.getConfig().webAppUrl || '');
+  const [gsVerifyResult, setGsVerifyResult] = useState<any>(null);
+  const [isVerifyingGs, setIsVerifyingGs] = useState<boolean>(false);
+
+  const scriptCode = "function doGet(e) {\n  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();\n  var rows = sheet.getDataRange().getValues();\n  var products = [];\n  for (var i = 1; i < rows.length; i++) {\n    var row = rows[i];\n    products.push({\n      id: row[0], title: row[1], price: Number(row[2]),\n      originalPrice: row[3] ? Number(row[3]) : undefined,\n      category: row[4], inStock: row[5] === true || row[5] === 'true',\n      sizes: row[6] ? row[6].split(',') : [], imageUrl: row[7],\n      description: row[8], fabric: row[9],\n      featured: row[10] === true || row[10] === 'true',\n      isNewArrival: row[11] === true || row[11] === 'true'\n    });\n  }\n  return ContentService.createTextOutput(JSON.stringify(products))\n    .setMimeType(ContentService.MimeType.JSON);\n}\n\nfunction doPost(e) {\n  try {\n    var data = JSON.parse(e.postData.contents);\n    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();\n    sheet.clear();\n    sheet.appendRow(['id', 'title', 'price', 'originalPrice', 'category', 'inStock', 'sizes', 'imageUrl', 'description', 'fabric', 'featured', 'isNewArrival']);\n    for (var i = 0; i < data.length; i++) {\n      var p = data[i];\n      sheet.appendRow([\n        p.id || '', p.title || '', p.price || 0, p.originalPrice || '',\n        p.category || '', p.inStock !== false,\n        Array.isArray(p.sizes) ? p.sizes.join(',') : '',\n        p.imageUrl || '', p.description || '', p.fabric || '',\n        p.featured === true, p.isNewArrival === true\n      ]);\n    }\n    return ContentService.createTextOutput(JSON.stringify({ success: true }))\n      .setMimeType(ContentService.MimeType.JSON);\n  } catch (err) {\n    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))\n      .setMimeType(ContentService.MimeType.JSON);\n  }\n}";
+
   const handleSaveGhConfig = (e: React.FormEvent) => {
     e.preventDefault();
     GitHubStorageService.saveConfig(ghTokenInput, ghRepoInput);
     onToast('GitHub Configuration Saved successfully!');
+  };
+
+  const handleSaveGsConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    GoogleSheetsService.saveConfig(gsWebAppUrlInput);
+    onToast('Google Sheets Configuration Saved successfully!');
   };
 
   const handleRunGhVerification = async () => {
@@ -115,6 +129,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       onToast('Verification failed.');
     } finally {
       setIsVerifyingGh(false);
+    }
+  };
+
+  const handleRunGsVerification = async () => {
+    setIsVerifyingGs(true);
+    setGsVerifyResult(null);
+    try {
+      const res = await GoogleSheetsService.verifyConnection(gsWebAppUrlInput);
+      setGsVerifyResult(res);
+      if (res.success) {
+        onToast(`✅ Google Sheets connected successfully! Loaded ${res.count} products.`);
+      } else {
+        onToast('⚠️ Google Sheets connection failed. Check Web App URL.');
+      }
+    } catch (e: any) {
+      setGsVerifyResult({ success: false, error: e.message || 'Verification failed' });
+      onToast('Verification failed.');
+    } finally {
+      setIsVerifyingGs(false);
     }
   };
 
@@ -1204,6 +1237,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </button>
 
                 <button
+                  onClick={() => setActiveTab('googlesheets')}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap ${
+                    activeTab === 'googlesheets'
+                      ? 'bg-[#4A0E17] text-[#D4AF37] border border-[#D4AF37] shadow-md'
+                      : 'bg-white text-gray-700 hover:bg-emerald-50 border border-emerald-300'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  <span>Google Sheets Cloud DB</span>
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-extrabold uppercase">
+                    Auto-Sync
+                  </span>
+                </button>
+
+                <button
                   onClick={() => setActiveTab('settings')}
                   className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all whitespace-nowrap ${
                     activeTab === 'settings'
@@ -2159,6 +2207,122 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     >
                       + Add Test Live Product
                     </button>
+                  </div>
+
+                </div>
+              )}
+
+              {/* TAB: GOOGLE SHEETS CLOUD DATABASE SYNC */}
+              {activeTab === 'googlesheets' && (
+                <div className="space-y-6 animate-fade-in">
+                  
+                  {/* Overview Card */}
+                  <div className="bg-gradient-to-r from-emerald-900 to-[#1b3b2b] text-[#FAF6F0] p-6 rounded-2xl shadow-xl border border-emerald-500/50 space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-xl bg-emerald-800 p-0.5 shadow-md flex items-center justify-center border border-emerald-400">
+                        <FileSpreadsheet className="w-6 h-6 text-emerald-300" />
+                      </div>
+                      <div>
+                        <h3 className="font-cinzel text-lg sm:text-xl font-bold text-emerald-200">
+                          Google Sheets Automated Cloud Database
+                        </h3>
+                        <p className="text-xs text-emerald-100/90">
+                          Connect any Google Sheet to automatically store, display, and update all product inventory in real-time for visitors worldwide. When admin adds, edits, or deletes a product, Google Sheets updates instantly.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Configuration Form */}
+                  <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                    <h4 className="font-cinzel text-base font-bold text-gray-900 flex items-center gap-2">
+                      <Settings className="w-5 h-5 text-emerald-600" />
+                      <span>Google Apps Script Web App URL Configuration</span>
+                    </h4>
+                    <p className="text-xs text-gray-600">
+                      Paste your deployed Google Apps Script Web App URL below. (See easy setup instructions below).
+                    </p>
+
+                    <form onSubmit={handleSaveGsConfig} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                          Google Apps Script Web App URL
+                        </label>
+                        <input
+                          type="url"
+                          value={gsWebAppUrlInput}
+                          onChange={(e) => setGsWebAppUrlInput(e.target.value)}
+                          placeholder="https://script.google.com/macros/s/.../exec"
+                          className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-emerald-700 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold uppercase tracking-wider shadow-md"
+                        >
+                          Save Google Sheets URL
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleRunGsVerification}
+                          disabled={isVerifyingGs}
+                          className="px-6 py-2.5 rounded-xl bg-white text-emerald-800 hover:bg-emerald-50 border border-emerald-600 text-xs font-bold uppercase tracking-wider shadow-md flex items-center gap-2 transition-all"
+                        >
+                          <RefreshCw className={`w-4 h-4 text-emerald-600 ${isVerifyingGs ? 'animate-spin' : ''}`} />
+                          <span>{isVerifyingGs ? 'Testing Connection...' : 'Test Google Sheets Connection'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Verification Results */}
+                  {gsVerifyResult && (
+                    <div className={`p-6 rounded-2xl border shadow-md space-y-3 animate-fade-in ${
+                      gsVerifyResult.success ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-rose-50 border-rose-300 text-rose-900'
+                    }`}>
+                      <div className="flex items-center gap-2 font-bold text-sm">
+                        {gsVerifyResult.success ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> : <AlertTriangle className="w-5 h-5 text-rose-600" />}
+                        <span>{gsVerifyResult.success ? `Successfully connected! Loaded ${gsVerifyResult.count} products from Google Sheet.` : `Connection Error: ${gsVerifyResult.error}`}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Setup Instructions Card */}
+                  <div className="bg-gradient-to-br from-gray-900 to-[#1a1a1a] text-gray-100 p-6 rounded-2xl border border-gray-800 shadow-xl space-y-4">
+                    <h4 className="font-cinzel text-base font-bold text-emerald-400 flex items-center gap-2">
+                      <FileSpreadsheet className="w-5 h-5" />
+                      <span>How to Setup Google Sheets Cloud Sync (2 Minutes)</span>
+                    </h4>
+                    
+                    <ol className="list-decimal pl-5 space-y-2 text-xs text-gray-300">
+                      <li>Create a new <a href="https://sheets.new" target="_blank" rel="noreferrer" className="text-emerald-400 underline font-bold">Google Sheet</a>. Name the first sheet tab <code className="bg-gray-800 px-1.5 py-0.5 rounded text-emerald-300 font-mono">Sheet1</code>.</li>
+                      <li>In Google Sheets menu, click on <b>Extensions</b> &gt; <b>Apps Script</b>.</li>
+                      <li>Delete any code in the editor and paste the Google Apps Script code provided below.</li>
+                      <li>Click <b>Deploy</b> &gt; <b>New deployment</b>. Select type: <b>Web app</b>.</li>
+                      <li>Set Description: <code className="bg-gray-800 px-1.5 py-0.5 rounded text-emerald-300 font-mono">Yaarika API</code>, Execute as: <b>Me</b>, Who has access: <b>Anyone</b>. Click <b>Deploy</b>.</li>
+                      <li>Copy the generated <b>Web App URL</b> and paste it in the configuration box above!</li>
+                    </ol>
+
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Google Apps Script Code (Copy &amp; Paste):</span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(scriptCode);
+                            onToast('Google Apps Script code copied to clipboard!');
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shadow transition-all"
+                        >
+                          📋 Copy Script Code
+                        </button>
+                      </div>
+                      <pre className="p-3.5 bg-[#111] border border-gray-800 rounded-xl text-[10px] font-mono text-emerald-300 overflow-x-auto max-h-48">
+{scriptCode}
+                      </pre>
+                    </div>
                   </div>
 
                 </div>

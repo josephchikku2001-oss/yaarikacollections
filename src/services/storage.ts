@@ -1,6 +1,16 @@
 import { Product, AdminCredentials, InquiryLog } from '../types';
 import { INITIAL_PRODUCTS } from '../data/initialProducts';
 import { GitHubStorageService } from './githubStorage';
+import { GoogleSheetsService } from './googleSheetsStorage';
+
+// Background sync from Google Sheets on app startup
+if (typeof window !== 'undefined') {
+  GoogleSheetsService.fetchProducts().then(cloudProducts => {
+    if (Array.isArray(cloudProducts) && cloudProducts.length > 0) {
+      ProductStorage.mergeWithCloudProducts(cloudProducts);
+    }
+  }).catch(() => {});
+}
 
 const KEYS = {
   ADMIN: 'yaarika_admin_credentials_v1',
@@ -513,6 +523,9 @@ export const ProductStorage = {
         console.warn('Background GitHub save note:', err?.message || err);
     });
 
+    // Sync to Google Sheets if configured
+    GoogleSheetsService.updateProducts(updated).catch(() => {});
+
     return createdProduct;
   },
 
@@ -565,6 +578,9 @@ export const ProductStorage = {
         console.warn('Background GitHub bulk sync note:', err?.message || err);
     });
 
+    // Sync to Google Sheets if configured
+    GoogleSheetsService.updateProducts(updated).catch(() => {});
+
     return {
       added: createdList.length,
       total: updated.length
@@ -593,6 +609,9 @@ export const ProductStorage = {
     GitHubStorageService.saveProduct(updatedProduct).catch(err => {
         console.warn('Background GitHub update warning:', err);
     });
+
+    // Sync to Google Sheets if configured
+    GoogleSheetsService.updateProducts(updated).catch(() => {});
   },
 
   toggleStockStatus(id: string): Product[] {
@@ -630,6 +649,9 @@ export const ProductStorage = {
     GitHubStorageService.deleteProduct(id).catch(err => {
         console.warn('Background GitHub delete warning:', err);
     });
+
+    // Sync deletion to Google Sheets if configured
+    GoogleSheetsService.updateProducts(updated).catch(() => {});
   },
 
   isDeleted(id: string): boolean {
