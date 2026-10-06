@@ -1,0 +1,6 @@
+{
+  "name": "Yaarika Collections",
+  "description": "Boutique e-commerce web application for Yaarika Collections featuring traditional Kerala sarees, co-ord sets, churidar sets, and designer wear with WhatsApp ordering and admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
