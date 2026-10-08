@@ -22,7 +22,7 @@ export const GoogleSheetsService = {
     if (!webAppUrl) return [];
 
     try {
-      const res = await fetch(webAppUrl);
+      const res = await fetch(`/api/googlesheets/proxy?url=${encodeURIComponent(webAppUrl)}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -40,10 +40,10 @@ export const GoogleSheetsService = {
     if (!webAppUrl) return false;
 
     try {
-      const res = await fetch(webAppUrl, {
+      const res = await fetch('/api/googlesheets/proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(products)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: webAppUrl, products })
       });
       if (res.ok) {
         const result = await res.json();
@@ -61,10 +61,12 @@ export const GoogleSheetsService = {
     }
 
     try {
-      const res = await fetch(webAppUrl.trim());
+      const res = await fetch(`/api/googlesheets/proxy?url=${encodeURIComponent(webAppUrl.trim())}`);
       if (res.ok) {
         const data = await res.json();
-        return { success: true, count: Array.isArray(data) ? data.length : 0 };
+        if (Array.isArray(data)) {
+          return { success: true, count: data.length };
+        }
       }
       return { success: false, error: 'Failed to connect to Google Sheets Web App URL.' };
     } catch (e: any) {

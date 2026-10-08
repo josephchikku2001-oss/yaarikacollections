@@ -59,6 +59,43 @@ async function startServer() {
     app.use(express.static(path.resolve(__dirname, 'dist')));
   }
 
+  // Universal Server-side Products API Storage
+  const PRODUCTS_FILE_PATH = path.resolve(__dirname, 'products.json');
+  const PUBLIC_PRODUCTS_FILE_PATH = path.resolve(__dirname, 'public', 'products.json');
+
+  app.get('/api/products', (req, res) => {
+    try {
+      if (fs.existsSync(PRODUCTS_FILE_PATH)) {
+        const content = fs.readFileSync(PRODUCTS_FILE_PATH, 'utf-8');
+        return res.json(JSON.parse(content || '[]'));
+      }
+      if (fs.existsSync(PUBLIC_PRODUCTS_FILE_PATH)) {
+        const content = fs.readFileSync(PUBLIC_PRODUCTS_FILE_PATH, 'utf-8');
+        return res.json(JSON.parse(content || '[]'));
+      }
+    } catch (e) {}
+    res.json([]);
+  });
+
+  app.post('/api/products', (req, res) => {
+    try {
+      const { products } = req.body;
+      if (Array.isArray(products)) {
+        fs.writeFileSync(PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
+        try {
+          if (!fs.existsSync(path.dirname(PUBLIC_PRODUCTS_FILE_PATH))) {
+            fs.mkdirSync(path.dirname(PUBLIC_PRODUCTS_FILE_PATH), { recursive: true });
+          }
+          fs.writeFileSync(PUBLIC_PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
+        } catch {}
+        return res.json({ success: true, count: products.length });
+      }
+      res.status(400).json({ success: false, error: 'Invalid products array' });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // GitHub API Proxy & Local products.json sync
   app.get('/api/github/products', async (req, res) => {
     const GITHUB_TOKEN = (req.headers['x-github-token'] as string) || process.env.GITHUB_TOKEN;
@@ -210,6 +247,32 @@ async function startServer() {
     } catch (e: any) {
       result.error = e.message || 'GitHub verification failed';
       res.json(result);
+    }
+  });
+
+  // Google Sheets Proxy Routes (avoids browser CORS issues and handles redirects)
+  app.get('/api/googlesheets/proxy', async (req, res) => {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).json({ error: 'URL required' });
+    try {
+      const response = await axios.get(url, { maxRedirects: 5 });
+      return res.json(response.data);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/googlesheets/proxy', async (req, res) => {
+    const { url, products } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL required' });
+    try {
+      const response = await axios.post(url, products, {
+        headers: { 'Content-Type': 'application/json' },
+        maxRedirects: 5
+      });
+      return res.json(response.data);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
     }
   });
 

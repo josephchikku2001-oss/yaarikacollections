@@ -397,8 +397,38 @@ export const ProductStorage = {
     return memoryProductsCache;
   },
 
-  // Asynchronous loader directly from IndexedDB
+  // Asynchronous loader from Server API (/api/products) and IndexedDB
   async loadProductsAsync(): Promise<Product[]> {
+    // 1. Try fetching from server API /api/products first for cross-device & refresh persistence
+    try {
+      const res = await fetch('/api/products');
+      if (res.ok) {
+        const serverProducts = await res.json();
+        if (Array.isArray(serverProducts) && serverProducts.length > 0) {
+          const deletedIds = new Set(getStoredDeletedIds());
+          const filteredServer = serverProducts.filter(p => !deletedIds.has(p.id));
+          const customItems = getStoredCustomProducts().filter(p => !deletedIds.has(p.id));
+          
+          const map = new Map<string, Product>();
+          customItems.forEach(p => map.set(p.id, p));
+          filteredServer.forEach(p => {
+            if (!map.has(p.id)) map.set(p.id, p);
+          });
+          const finalProducts = Array.from(map.values());
+          
+          memoryProductsCache = finalProducts;
+          persistToIndexedDB(finalProducts);
+          try {
+            localStorage.setItem(KEYS.PRODUCTS, JSON.stringify(finalProducts));
+          } catch {}
+          return finalProducts;
+        }
+      }
+    } catch (e) {
+      console.warn('Server /api/products load warning:', e);
+    }
+
+    // 2. Fall back to IndexedDB
     try {
       const db = await openIndexedDB();
       const tx = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
@@ -442,6 +472,15 @@ export const ProductStorage = {
 
     // Notify all components in real-time
     broadcastProductsUpdate(products);
+
+    // Sync to Server API in background for cross-system and refresh persistence
+    if (typeof window !== 'undefined') {
+      fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ products })
+      }).catch(() => {});
+    }
   },
 
   // Safely merges cloud products without ever losing locally uploaded products

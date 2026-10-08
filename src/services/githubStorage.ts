@@ -25,6 +25,17 @@ export const GitHubStorageService = {
   },
 
   async fetchProducts(): Promise<Product[]> {
+    // 0. Try server /api/products first
+    try {
+      const apiRes = await fetch('/api/products');
+      if (apiRes.ok) {
+        const data = await apiRes.json();
+        if (Array.isArray(data) && data.length > 0) {
+          return data;
+        }
+      }
+    } catch {}
+
     // 1. Try static public products.json
     try {
       const res = await fetch('/products.json');
