@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import { getDbProducts, saveDbProducts } from './src/db/dbProducts';
 
 dotenv.config();
 
@@ -59,11 +60,18 @@ async function startServer() {
     app.use(express.static(path.resolve(__dirname, 'dist')));
   }
 
-  // Universal Server-side Products API Storage
+  // Universal Server-side Products API Storage backed by Cloud SQL PostgreSQL
   const PRODUCTS_FILE_PATH = path.resolve(__dirname, 'products.json');
   const PUBLIC_PRODUCTS_FILE_PATH = path.resolve(__dirname, 'public', 'products.json');
 
-  app.get('/api/products', (req, res) => {
+  app.get('/api/products', async (req, res) => {
+    try {
+      const dbProducts = await getDbProducts();
+      if (dbProducts && dbProducts.length > 0) {
+        return res.json(dbProducts);
+      }
+    } catch (e) {}
+
     try {
       if (fs.existsSync(PRODUCTS_FILE_PATH)) {
         const content = fs.readFileSync(PRODUCTS_FILE_PATH, 'utf-8');
@@ -77,10 +85,16 @@ async function startServer() {
     res.json([]);
   });
 
-  app.post('/api/products', (req, res) => {
+  app.post('/api/products', async (req, res) => {
     try {
       const { products } = req.body;
       if (Array.isArray(products)) {
+        try {
+          await saveDbProducts(products);
+        } catch (dbErr) {
+          console.warn('Cloud SQL save warning:', dbErr);
+        }
+
         fs.writeFileSync(PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
         try {
           if (!fs.existsSync(path.dirname(PUBLIC_PRODUCTS_FILE_PATH))) {
@@ -88,6 +102,7 @@ async function startServer() {
           }
           fs.writeFileSync(PUBLIC_PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
         } catch {}
+
         return res.json({ success: true, count: products.length });
       }
       res.status(400).json({ success: false, error: 'Invalid products array' });
