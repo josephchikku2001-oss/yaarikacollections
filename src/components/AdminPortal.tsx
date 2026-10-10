@@ -2172,6 +2172,62 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                   )}
 
+                  {/* Manual GitHub Copy / Paste Backup */}
+                  <div className="bg-gradient-to-r from-amber-50 to-orange-50/50 p-6 rounded-2xl border-2 border-amber-300 shadow-sm space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-[#4A0E17] text-[#D4AF37] flex items-center justify-center shrink-0">
+                        <Download className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="font-cinzel text-sm sm:text-base font-bold text-[#4A0E17]">
+                          Direct GitHub Copy / Paste (100% Guaranteed Backup)
+                        </h4>
+                        <p className="text-xs text-gray-600">
+                          If GitHub API commits fail or are blocked by permissions, you can copy your entire products catalog with one click and paste it directly into your GitHub <code className="bg-white px-1.5 py-0.5 rounded border border-gray-300 font-mono text-gray-800">products.json</code> file!
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const jsonStr = JSON.stringify(ProductStorage.getProducts(), null, 2);
+                          navigator.clipboard.writeText(jsonStr).then(() => {
+                            onToast('📋 Products JSON copied to clipboard! Paste it into GitHub products.json.');
+                          }).catch(() => {
+                            onToast('Failed to copy. Please use download button.');
+                          });
+                        }}
+                        className="px-5 py-2.5 rounded-xl bg-[#4A0E17] text-[#D4AF37] hover:bg-[#32080F] border border-[#D4AF37] text-xs font-bold uppercase tracking-wider shadow-sm flex items-center gap-2 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        <span>Copy Products JSON ({products.length} items)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const jsonStr = JSON.stringify(ProductStorage.getProducts(), null, 2);
+                          const blob = new Blob([jsonStr], { type: 'application/json' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = 'products.json';
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                          onToast('⬇️ Downloaded products.json file!');
+                        }}
+                        className="px-5 py-2.5 rounded-xl bg-white hover:bg-gray-50 text-gray-800 border border-gray-300 text-xs font-bold uppercase tracking-wider shadow-sm flex items-center gap-2 cursor-pointer"
+                      >
+                        <Download className="w-4 h-4 text-gray-600" />
+                        <span>Download products.json</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Quick Test Action */}
                   <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div>

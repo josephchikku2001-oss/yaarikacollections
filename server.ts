@@ -4,11 +4,136 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import axios from 'axios';
-import { getDbProducts, saveDbProducts } from './src/db/dbProducts.js';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Direct Cloud SQL connection pool
+let dbPool: pg.Pool | null = null;
+
+function getDbPool(): pg.Pool | null {
+  if (!process.env.SQL_HOST || !process.env.SQL_DB_NAME) {
+    return null;
+  }
+  if (!dbPool) {
+    try {
+      dbPool = new Pool({
+        host: process.env.SQL_HOST,
+        user: process.env.SQL_USER,
+        password: process.env.SQL_PASSWORD,
+        database: process.env.SQL_DB_NAME,
+        max: 10,
+        connectionTimeoutMillis: 15000,
+      });
+      dbPool.on('error', (err) => {
+        console.warn('Unexpected error on idle SQL pool client:', err);
+      });
+    } catch (e) {
+      console.warn('Failed to initialize SQL pool:', e);
+      return null;
+    }
+  }
+  return dbPool;
+}
+
+async function ensureProductsTable(pool: pg.Pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      price REAL NOT NULL,
+      original_price REAL,
+      in_stock BOOLEAN DEFAULT TRUE,
+      stock_count INTEGER,
+      size_stock JSONB,
+      is_new_arrival BOOLEAN DEFAULT FALSE,
+      sizes JSONB NOT NULL,
+      image_url TEXT,
+      description TEXT,
+      created_at TEXT
+    );
+  `);
+}
+
+async function getDbProducts(): Promise<any[]> {
+  const pool = getDbPool();
+  if (!pool) return [];
+  try {
+    await ensureProductsTable(pool);
+    const res = await pool.query('SELECT * FROM products ORDER BY created_at DESC');
+    if (res.rows && res.rows.length > 0) {
+      return res.rows.map(r => ({
+        id: r.id,
+        title: r.title,
+        category: r.category,
+        price: r.price,
+        originalPrice: r.original_price != null ? r.original_price : undefined,
+        inStock: r.in_stock !== false,
+        stockCount: r.stock_count != null ? r.stock_count : undefined,
+        sizeStock: r.size_stock || {},
+        isNewArrival: Boolean(r.is_new_arrival),
+        sizes: Array.isArray(r.sizes) ? r.sizes : ['Free Size'],
+        imageUrl: r.image_url || '',
+        description: r.description || '',
+        createdAt: r.created_at || new Date().toISOString()
+      }));
+    }
+  } catch (err) {
+    console.warn('Database getDbProducts note:', err);
+  }
+  return [];
+}
+
+async function saveDbProducts(products: any[]) {
+  const pool = getDbPool();
+  if (!pool || !Array.isArray(products) || products.length === 0) return;
+  try {
+    await ensureProductsTable(pool);
+    for (const p of products) {
+      await pool.query(`
+        INSERT INTO products (
+          id, title, category, price, original_price, in_stock, stock_count, size_stock, is_new_arrival, sizes, image_url, description, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          title = EXCLUDED.title,
+          category = EXCLUDED.category,
+          price = EXCLUDED.price,
+          original_price = EXCLUDED.original_price,
+          in_stock = EXCLUDED.in_stock,
+          stock_count = EXCLUDED.stock_count,
+          size_stock = EXCLUDED.size_stock,
+          is_new_arrival = EXCLUDED.is_new_arrival,
+          sizes = EXCLUDED.sizes,
+          image_url = EXCLUDED.image_url,
+          description = EXCLUDED.description,
+          created_at = EXCLUDED.created_at;
+      `, [
+        p.id,
+        p.title,
+        p.category,
+        p.price,
+        p.originalPrice || null,
+        p.inStock !== false,
+        p.stockCount || null,
+        JSON.stringify(p.sizeStock || {}),
+        Boolean(p.isNewArrival),
+        JSON.stringify(p.sizes || ['Free Size']),
+        p.imageUrl || '',
+        p.description || '',
+        p.createdAt || new Date().toISOString()
+      ]);
+    }
+  } catch (err) {
+    console.warn('Database saveDbProducts note:', err);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -60,7 +185,7 @@ async function startServer() {
     app.use(express.static(path.resolve(__dirname, 'dist')));
   }
 
-  // Universal Server-side Products API Storage backed by Cloud SQL PostgreSQL
+  // Universal Server-side Products API Storage backed by Cloud SQL PostgreSQL & Local File
   const PRODUCTS_FILE_PATH = path.resolve(__dirname, 'products.json');
   const PUBLIC_PRODUCTS_FILE_PATH = path.resolve(__dirname, 'public', 'products.json');
 
@@ -75,11 +200,17 @@ async function startServer() {
     try {
       if (fs.existsSync(PRODUCTS_FILE_PATH)) {
         const content = fs.readFileSync(PRODUCTS_FILE_PATH, 'utf-8');
-        return res.json(JSON.parse(content || '[]'));
+        const parsed = JSON.parse(content || '[]');
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return res.json(parsed);
+        }
       }
       if (fs.existsSync(PUBLIC_PRODUCTS_FILE_PATH)) {
         const content = fs.readFileSync(PUBLIC_PRODUCTS_FILE_PATH, 'utf-8');
-        return res.json(JSON.parse(content || '[]'));
+        const parsed = JSON.parse(content || '[]');
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return res.json(parsed);
+        }
       }
     } catch (e) {}
     res.json([]);
@@ -92,16 +223,18 @@ async function startServer() {
         try {
           await saveDbProducts(products);
         } catch (dbErr) {
-          console.warn('Cloud SQL save warning:', dbErr);
+          console.warn('Cloud SQL save note:', dbErr);
         }
 
-        fs.writeFileSync(PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
         try {
+          fs.writeFileSync(PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
           if (!fs.existsSync(path.dirname(PUBLIC_PRODUCTS_FILE_PATH))) {
             fs.mkdirSync(path.dirname(PUBLIC_PRODUCTS_FILE_PATH), { recursive: true });
           }
           fs.writeFileSync(PUBLIC_PRODUCTS_FILE_PATH, JSON.stringify(products, null, 2), 'utf-8');
-        } catch {}
+        } catch (fileErr) {
+          console.warn('File save note:', fileErr);
+        }
 
         return res.json({ success: true, count: products.length });
       }
@@ -130,7 +263,7 @@ async function startServer() {
     try {
       const { data } = await axios.get(
         `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
-        { headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3.raw' } }
+        { headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3.raw' } }
       );
       res.json(data);
     } catch (error: any) {
@@ -155,7 +288,7 @@ async function startServer() {
       const localPath = path.resolve(__dirname, 'products.json');
       fs.writeFileSync(localPath, JSON.stringify(content, null, 2), 'utf-8');
     } catch (err) {
-      console.warn('Local products.json write error:', err);
+      console.warn('Local products.json write note:', err);
     }
 
     if (!GITHUB_TOKEN || !GITHUB_REPO) {
@@ -163,22 +296,21 @@ async function startServer() {
     }
     
     try {
-      // 1. Get SHA of existing file
       let sha: string | undefined = undefined;
       try {
         const { data: fileData } = await axios.get(
           `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
-          { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
+          { headers: { Authorization: `Bearer ${GITHUB_TOKEN}` } }
         );
         if (fileData && typeof fileData.sha === 'string') {
           sha = fileData.sha;
         }
       } catch (e) {}
 
-      // 2. Update file on GitHub
       const updatePayload: any = {
         message: message || 'Update products via Admin Portal',
-        content: Buffer.from(JSON.stringify(content, null, 2)).toString('base64')
+        content: Buffer.from(JSON.stringify(content, null, 2)).toString('base64'),
+        branch: 'main'
       };
       if (sha && typeof sha === 'string' && sha.trim() !== '') {
         updatePayload.sha = sha;
@@ -187,81 +319,12 @@ async function startServer() {
       await axios.put(
         `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
         updatePayload,
-        { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
+        { headers: { Authorization: `Bearer ${GITHUB_TOKEN}` } }
       );
       
       res.json({ success: true, mode: 'github' });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
-    }
-  });
-
-  // Verification endpoint for Admin Portal verification process
-  app.post('/api/github/verify', async (req, res) => {
-    const { token, repo } = req.body;
-    const GITHUB_TOKEN = token || process.env.GITHUB_TOKEN;
-    const GITHUB_REPO = repo || process.env.GITHUB_REPO;
-
-    const result = {
-      hasToken: !!GITHUB_TOKEN,
-      hasRepo: !!GITHUB_REPO,
-      repoAccess: false,
-      readSuccess: false,
-      writeSuccess: false,
-      error: null as string | null
-    };
-
-    if (!GITHUB_TOKEN || !GITHUB_REPO) {
-      result.error = 'GitHub Token and Repository (owner/repo) are required.';
-      return res.json(result);
-    }
-
-    try {
-      const repoCheck = await axios.get(
-        `https://api.github.com/repos/${GITHUB_REPO}`,
-        { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
-      );
-      if (repoCheck.status === 200) {
-        result.repoAccess = true;
-      }
-
-      try {
-        await axios.get(
-          `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
-          { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
-        );
-        result.readSuccess = true;
-      } catch {
-        result.readSuccess = true; // file can be created on first write
-      }
-
-      const timestamp = new Date().toISOString();
-      const testPing = [{ id: 'verify-ping', title: `Sync Verification ${timestamp}`, price: 99, category: 'Fusion Wear', inStock: true, sizes: ['Free Size'], imageUrl: '', description: 'Verification test' }];
-
-      let sha: string | undefined = undefined;
-      try {
-        const { data: fileData } = await axios.get(
-          `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
-          { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
-        );
-        sha = fileData.sha;
-      } catch {}
-
-      await axios.put(
-        `https://api.github.com/repos/${GITHUB_REPO}/contents/products.json`,
-        {
-          message: `Verification test sync at ${timestamp}`,
-          content: Buffer.from(JSON.stringify(testPing, null, 2)).toString('base64'),
-          ...(sha ? { sha } : {})
-        },
-        { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
-      );
-      result.writeSuccess = true;
-
-      res.json(result);
-    } catch (e: any) {
-      result.error = e.message || 'GitHub verification failed';
-      res.json(result);
     }
   });
 
@@ -292,7 +355,6 @@ async function startServer() {
   });
 
   // SPA fallback for all routes including /admin, /admin-dashboard, etc.
-  // Guarantees no 404 on direct browser navigation or refresh
   app.get('*', async (req, res, next) => {
     if (req.originalUrl.startsWith('/api')) {
       return res.status(404).json({ error: 'API endpoint not found' });

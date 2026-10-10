@@ -1,4 +1,28 @@
 import { Product } from '../types';
+import { INITIAL_PRODUCTS } from '../data/initialProducts';
+
+function cleanRepo(repo: string): string {
+  if (!repo) return '';
+  return repo
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '');
+}
+
+function cleanToken(token: string): string {
+  if (!token) return '';
+  return token.trim().replace(/^['"]|['"]$/g, '');
+}
+
+function getAuthHeaders(token: string): Record<string, string> {
+  const t = cleanToken(token);
+  return {
+    Authorization: `Bearer ${t}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
+}
 
 export const GitHubStorageService = {
   getConfig() {
@@ -7,7 +31,10 @@ export const GitHubStorageService = {
       if (config) {
         const parsed = JSON.parse(config);
         if (parsed.token || parsed.repo) {
-          return parsed;
+          return {
+            token: cleanToken(parsed.token || ''),
+            repo: cleanRepo(parsed.repo || '')
+          };
         }
       }
     } catch {}
@@ -20,7 +47,11 @@ export const GitHubStorageService = {
 
   saveConfig(token: string, repo: string) {
     try {
-      localStorage.setItem('yaarika_github_config', JSON.stringify({ token: token.trim(), repo: repo.trim() }));
+      const cleaned = {
+        token: cleanToken(token),
+        repo: cleanRepo(repo)
+      };
+      localStorage.setItem('yaarika_github_config', JSON.stringify(cleaned));
     } catch {}
   },
 
@@ -38,7 +69,7 @@ export const GitHubStorageService = {
 
     // 1. Try static public products.json
     try {
-      const res = await fetch('/products.json');
+      const res = await fetch(`/products.json?t=${Date.now()}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {
@@ -54,7 +85,7 @@ export const GitHubStorageService = {
         const rawRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/products.json?t=${Date.now()}`);
         if (rawRes.ok) {
           const data = await rawRes.json();
-          if (Array.isArray(data)) return data;
+          if (Array.isArray(data) && data.length > 0) return data;
         }
       } catch {}
 
@@ -62,7 +93,7 @@ export const GitHubStorageService = {
         const rawResMaster = await fetch(`https://raw.githubusercontent.com/${repo}/master/products.json?t=${Date.now()}`);
         if (rawResMaster.ok) {
           const data = await rawResMaster.json();
-          if (Array.isArray(data)) return data;
+          if (Array.isArray(data) && data.length > 0) return data;
         }
       } catch {}
 
@@ -70,11 +101,11 @@ export const GitHubStorageService = {
       if (token) {
         try {
           const apiRes = await fetch(`https://api.github.com/repos/${repo}/contents/products.json`, {
-            headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3.raw' }
+            headers: { ...getAuthHeaders(token), Accept: 'application/vnd.github.v3.raw' }
           });
           if (apiRes.ok) {
             const data = await apiRes.json();
-            if (Array.isArray(data)) return data;
+            if (Array.isArray(data) && data.length > 0) return data;
           }
         } catch {}
       }
@@ -83,7 +114,7 @@ export const GitHubStorageService = {
     return [];
   },
 
-  async updateProducts(products: Product[], message: string): Promise<void> {
+  async updateProducts(products: Product[], message: string): Promise<{ success: boolean; error?: string }> {
     // 1. Try local server save if available
     try {
       await fetch('/api/github/update', {
@@ -96,16 +127,17 @@ export const GitHubStorageService = {
     // 2. Push to GitHub repository via direct REST API with automatic SHA fallback
     const { token, repo } = this.getConfig();
     if (!token || !repo) {
-      console.warn('GitHub sync note: Token or repository not configured.');
-      return;
+      return { success: false, error: 'GitHub Token or repository not configured.' };
     }
 
     const contentBase64 = utf8ToBase64(JSON.stringify(products, null, 2));
 
+    // Get current SHA from repo
     let sha: string | undefined = undefined;
     try {
-      const fileRes = await fetch(`https://api.github.com/repos/${repo}/contents/products.json`, {
-        headers: { Authorization: `token ${token}` }
+      const fileRes = await fetch(`https://api.github.com/repos/${repo}/contents/products.json?ref=main`, {
+        headers: getAuthHeaders(token),
+        cache: 'no-store'
       });
       if (fileRes.ok) {
         const fileData = await fileRes.json();
@@ -115,76 +147,128 @@ export const GitHubStorageService = {
       }
     } catch {}
 
-    const makePutRequest = async (currentSha?: string) => {
+    const makePutRequest = async (currentSha?: string, useTokenHeader = false) => {
       const payload: any = {
-        message: message || 'Update products via Yaarika Admin Portal',
-        content: contentBase64
+        message: message || 'Update products.json via Yaarika Admin Portal',
+        content: contentBase64,
+        branch: 'main'
       };
       if (currentSha && typeof currentSha === 'string' && currentSha.trim() !== '') {
         payload.sha = currentSha;
       }
 
+      const headers: Record<string, string> = useTokenHeader
+        ? {
+            Authorization: `token ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json'
+          }
+        : {
+            ...getAuthHeaders(token),
+            'Content-Type': 'application/json'
+          };
+
       return await fetch(`https://api.github.com/repos/${repo}/contents/products.json`, {
         method: 'PUT',
-        headers: {
-          Authorization: `token ${token}`,
-          'Content-Type': 'application/json'
-        },
+        headers,
         body: JSON.stringify(payload)
       });
     };
 
-    let putRes = await makePutRequest(sha);
+    let putRes = await makePutRequest(sha, false);
 
-    // If failed with SHA, retry without SHA
+    // If failed with Bearer header, retry with legacy token prefix
+    if (!putRes.ok) {
+      putRes = await makePutRequest(sha, true);
+    }
+
+    // If failed with SHA, retry without SHA in case file was newly created or branch differs
     if (!putRes.ok && sha) {
-      putRes = await makePutRequest(undefined);
+      putRes = await makePutRequest(undefined, false);
     }
 
     if (!putRes.ok) {
-      const errText = await putRes.text();
-      console.warn(`GitHub commit warning: ${errText}`);
+      let errText = '';
+      try {
+        const errJson = await putRes.json();
+        errText = errJson.message || JSON.stringify(errJson);
+      } catch {
+        errText = await putRes.text();
+      }
+      console.warn(`GitHub commit warning (${putRes.status}):`, errText);
+      return { success: false, error: `GitHub Error (${putRes.status}): ${errText}` };
     }
+
+    return { success: true };
   },
 
-  async saveProduct(product: Product): Promise<void> {
+  async saveProduct(product: Product): Promise<{ success: boolean; error?: string }> {
     const products = await this.fetchProducts();
-    const index = products.findIndex(p => p.id === product.id);
+    const effective = products.length > 0 ? [...products] : [...INITIAL_PRODUCTS];
+    const index = effective.findIndex(p => p.id === product.id);
     if (index > -1) {
-      products[index] = product;
+      effective[index] = product;
     } else {
-      products.push(product);
+      effective.unshift(product);
     }
-    await this.updateProducts(products, `Save product ${product.title}`);
+    return await this.updateProducts(effective, `Save product ${product.title}`);
   },
 
-  async deleteProduct(productId: string): Promise<void> {
+  async deleteProduct(productId: string): Promise<{ success: boolean; error?: string }> {
     const products = await this.fetchProducts();
     const filtered = products.filter(p => p.id !== productId);
-    await this.updateProducts(filtered, `Delete product ${productId}`);
+    return await this.updateProducts(filtered, `Delete product ${productId}`);
   },
 
   async verifyConnection(token: string, repo: string): Promise<any> {
-    const activeToken = token || this.getConfig().token;
-    const activeRepo = repo || this.getConfig().repo;
+    const activeToken = cleanToken(token || this.getConfig().token);
+    const activeRepo = cleanRepo(repo || this.getConfig().repo);
 
     if (!activeToken || !activeRepo) {
-      return { success: false, hasToken: !!activeToken, hasRepo: !!activeRepo, error: 'GitHub Token and Repository (owner/repo) are required.' };
+      return {
+        success: false,
+        hasToken: !!activeToken,
+        hasRepo: !!activeRepo,
+        error: 'GitHub Token and Repository (owner/repo, e.g. josephchikku2001-oss/yaarikacollections) are required.'
+      };
+    }
+
+    if (!activeRepo.includes('/')) {
+      return {
+        success: false,
+        hasToken: true,
+        hasRepo: false,
+        error: 'Repository name must be in "owner/repository" format (e.g., josephchikku2001-oss/yaarikacollections).'
+      };
     }
 
     try {
+      // 1. Check repository access
       const repoCheck = await fetch(`https://api.github.com/repos/${activeRepo}`, {
-        headers: { Authorization: `token ${activeToken}` }
+        headers: getAuthHeaders(activeToken)
       });
       if (!repoCheck.ok) {
-        return { success: false, hasToken: true, hasRepo: true, repoAccess: false, error: 'Invalid repository name or unauthorized token.' };
+        let repoErr = '';
+        try {
+          const errData = await repoCheck.json();
+          repoErr = errData.message || '';
+        } catch {}
+        return {
+          success: false,
+          hasToken: true,
+          hasRepo: true,
+          repoAccess: false,
+          error: `Cannot access repository: ${repoErr || `HTTP ${repoCheck.status}`}. Please check token permissions.`
+        };
       }
 
+      // 2. Read products.json SHA if it exists
       let sha: string | undefined = undefined;
       let readSuccess = false;
       try {
-        const fileRes = await fetch(`https://api.github.com/repos/${activeRepo}/contents/products.json`, {
-          headers: { Authorization: `token ${activeToken}` }
+        const fileRes = await fetch(`https://api.github.com/repos/${activeRepo}/contents/products.json?ref=main`, {
+          headers: getAuthHeaders(activeToken),
+          cache: 'no-store'
         });
         if (fileRes.ok) {
           const fileData = await fileRes.json();
@@ -192,43 +276,94 @@ export const GitHubStorageService = {
             sha = fileData.sha;
           }
           readSuccess = true;
+        } else if (fileRes.status === 404) {
+          // File does not exist yet, that's fine
+          readSuccess = true;
         }
       } catch {
         readSuccess = true;
       }
 
-      const timestamp = new Date().toISOString();
-      const testPing = [{ id: 'verify-ping', title: `Sync Verification ${timestamp}`, price: 99, category: 'Fusion Wear', inStock: true, sizes: ['Free Size'], imageUrl: '', description: 'Verification test' }];
+      // 3. Attempt verification write using REAL catalog items (not dummy ping item)
+      // This ensures verifying also populates the file with actual catalog!
+      let catalog = INITIAL_PRODUCTS;
+      try {
+        const local = localStorage.getItem('yaarika_products_v10');
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) catalog = parsed;
+        }
+      } catch {}
 
+      const timestamp = new Date().toISOString();
       const bodyPayload: any = {
-        message: `Verification test sync at ${timestamp}`,
-        content: utf8ToBase64(JSON.stringify(testPing, null, 2))
+        message: `Verify & sync catalog (${catalog.length} items) via Yaarika Admin at ${timestamp}`,
+        content: utf8ToBase64(JSON.stringify(catalog, null, 2)),
+        branch: 'main'
       };
       if (sha && typeof sha === 'string' && sha.trim() !== '') {
         bodyPayload.sha = sha;
       }
 
-      const putRes = await fetch(`https://api.github.com/repos/${activeRepo}/contents/products.json`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `token ${activeToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(bodyPayload)
-      });
+      const makePut = async (useToken = false) => {
+        const h: Record<string, string> = useToken
+          ? {
+              Authorization: `token ${activeToken}`,
+              Accept: 'application/vnd.github+json',
+              'Content-Type': 'application/json'
+            }
+          : {
+              ...getAuthHeaders(activeToken),
+              'Content-Type': 'application/json'
+            };
+        return await fetch(`https://api.github.com/repos/${activeRepo}/contents/products.json`, {
+          method: 'PUT',
+          headers: h,
+          body: JSON.stringify(bodyPayload)
+        });
+      };
 
-      const writeSuccess = putRes.ok;
+      let putRes = await makePut(false);
+      if (!putRes.ok) {
+        putRes = await makePut(true);
+      }
+
+      if (!putRes.ok) {
+        let errDetail = '';
+        try {
+          const errData = await putRes.json();
+          errDetail = errData.message || JSON.stringify(errData);
+        } catch {
+          errDetail = await putRes.text();
+        }
+
+        return {
+          hasToken: true,
+          hasRepo: true,
+          repoAccess: true,
+          readSuccess,
+          writeSuccess: false,
+          error: `GitHub Error (${putRes.status}): ${errDetail}`
+        };
+      }
 
       return {
+        success: true,
         hasToken: true,
         hasRepo: true,
         repoAccess: true,
         readSuccess,
-        writeSuccess,
-        error: writeSuccess ? null : 'Failed to write products.json to repository.'
+        writeSuccess: true,
+        error: null,
+        message: `Successfully connected & synced ${catalog.length} products to GitHub!`
       };
     } catch (e: any) {
-      return { success: false, hasToken: !!activeToken, hasRepo: !!activeRepo, error: e.message || 'GitHub verification failed' };
+      return {
+        success: false,
+        hasToken: !!activeToken,
+        hasRepo: !!activeRepo,
+        error: e.message || 'GitHub verification failed'
+      };
     }
   }
 };
