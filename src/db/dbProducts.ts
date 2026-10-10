@@ -1,5 +1,5 @@
-import { db, createPool } from './index';
-import { productsTable } from './schema';
+import { db, createPool } from './index.js';
+import { productsTable } from './schema.js';
 import { eq } from 'drizzle-orm';
 import { Product } from '../types';
 

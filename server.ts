@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import axios from 'axios';
-import { getDbProducts, saveDbProducts } from './src/db/dbProducts';
+import { getDbProducts, saveDbProducts } from './src/db/dbProducts.js';
 
 dotenv.config();
 
