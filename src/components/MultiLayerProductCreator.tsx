@@ -550,10 +550,10 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
     try {
       if (productsToCreate.length === 1) {
         ProductStorage.addProduct(productsToCreate[0]);
-        onToast(`Added product "${productsToCreate[0].title}" to Yaarika catalog & Firestore!`);
+        onToast(`Added product "${productsToCreate[0].title}" to Yaarika catalog & Google Sheets!`);
       } else {
         const res = ProductStorage.bulkAddProducts(productsToCreate);
-        onToast(`Successfully added all ${res.added} products from layers to Catalog & Firestore!`);
+        onToast(`Successfully added all ${res.added} products from layers to Catalog & Google Sheets!`);
       }
       onSuccess(productsToCreate.length);
     } catch (err: any) {
@@ -1134,7 +1134,7 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
                 </div>
                 <p className="text-[11px] text-gray-500">
                   {isFirstLayerValid 
-                    ? 'Click below to instantly save all entered products to Yaarika Catalog & Firebase Firestore.' 
+                    ? 'Click below to instantly save all entered products to Yaarika Catalog & linked Google Sheet.' 
                     : 'Fill at least Layer #1 Product Title and Offer Price to activate the button.'}
                 </p>
               </div>
@@ -1163,9 +1163,9 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
                 <Flame className={`w-4 h-4 ${isFirstLayerValid ? 'text-[#4A0E17]' : 'text-gray-400'}`} />
                 <span>
                   {isSubmitting 
-                    ? 'Saving to Firestore...' 
+                    ? 'Saving to Catalog & Sheets...' 
                     : isEditMode 
-                    ? 'Update Product in Firestore' 
+                    ? 'Update Product in Catalog' 
                     : validLayers.length > 1 
                     ? `Add ${validLayers.length} Products to Catalog` 
                     : 'Add New Product'}

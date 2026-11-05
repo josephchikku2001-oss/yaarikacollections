@@ -10,12 +10,6 @@ import { Toast } from './components/Toast';
 import { CategoryType, Product, ViewMode, SortOption, PriceRangeOption, SizeType } from './types';
 import { CatalogFilterBar } from './components/CatalogFilterBar';
 import { ProductStorage, WishlistStorage, AdminStorage, PRODUCTS_UPDATED_EVENT } from './services/storage';
-import { GitHubStorageService } from './services/githubStorage';
-import { 
-  FirestoreProductService, 
-  isFirebaseConfigured, 
-  getSavedFirebaseConfig 
-} from './services/firebase';
 import { 
   Sparkles, 
   Heart, 
@@ -79,8 +73,6 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isAdminSetupComplete, setIsAdminSetupComplete] = useState<boolean>(false);
   const [visibleCount, setVisibleCount] = useState<number>(24);
-  const [isFirestoreConnected, setIsFirestoreConnected] = useState<boolean>(false);
-  const [isSyncingFirestore, setIsSyncingFirestore] = useState<boolean>(false);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(false);
   const [showWelcomeIntro, setShowWelcomeIntro] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
@@ -161,66 +153,24 @@ export default function App() {
     };
   }, []);
 
-  // Initial Data Load & Dynamic Real-Time Fetch from Firebase Firestore
+  // Initial Data Load & Real-Time Sync with Client Storage
   useEffect(() => {
-    // 1. Initial Synchronous & Local Cache fetch for zero-delay rendering
+    // 1. Initial Synchronous fetch from local storage for instant rendering
     const syncProducts = ProductStorage.getProducts();
     setProducts(syncProducts);
     setWishlist(WishlistStorage.getWishlist());
     setIsAdminSetupComplete(AdminStorage.isSetupComplete());
+    setIsLoadingCatalog(false);
 
-    let unsubscribeFirestore: (() => void) | null = null;
-
-    // 2. Check if Firebase Firestore is configured
-    if (isFirebaseConfigured()) {
-      setIsFirestoreConnected(false);
-      setIsLoadingCatalog(false); // Render instantly from local cache without blocking
-
-      // A. Perform dynamic fetch from Firestore with safe fallback & merge
-      FirestoreProductService.fetchProducts()
-        .then((cloudProducts) => {
-          const merged = ProductStorage.mergeWithCloudProducts(cloudProducts);
-          const filtered = merged.filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(filtered);
-          setIsFirestoreConnected(true);
-        })
-        .catch(() => {
-          // Graceful fallback to verified local catalog cache
-          setIsFirestoreConnected(false);
-          const cached = ProductStorage.getProducts().filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(cached);
-        });
-
-      // B. Set up Real-Time Dynamic Listener for live updates across all devices
-      unsubscribeFirestore = FirestoreProductService.subscribeToProducts(
-        (liveProducts) => {
-          const merged = ProductStorage.mergeWithCloudProducts(liveProducts);
-          const filtered = merged.filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(filtered);
-          setIsFirestoreConnected(true);
-        },
-        () => {
-          setIsFirestoreConnected(false);
-        }
-      );
-    } else {
-      setIsLoadingCatalog(false);
-      // If Firebase is not yet configured, load from local IndexedDB storage and fetch from GitHub repository
-      ProductStorage.loadProductsAsync().then((allProducts) => {
-        const filtered = (allProducts || []).filter(p => !ProductStorage.isDeleted(p.id));
+    // 2. Load from IndexedDB cache if available
+    ProductStorage.loadProductsAsync().then((items) => {
+      if (items && Array.isArray(items)) {
+        const filtered = items.filter(p => !ProductStorage.isDeleted(p.id));
         setProducts(filtered);
-      });
+      }
+    }).catch(() => {});
 
-      GitHubStorageService.fetchProducts().then((remoteProducts) => {
-        if (remoteProducts && Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-          const merged = ProductStorage.mergeWithCloudProducts(remoteProducts);
-          const filtered = merged.filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(filtered);
-        }
-      }).catch(() => {});
-    }
-
-    // 3. Listen to instant broadcast events when admin adds/edits/deletes products locally
+    // 3. Listen to instant broadcast events when admin adds/edits/deletes products
     const handleProductsUpdated = (event: Event) => {
       const customEvent = event as CustomEvent<Product[]>;
       if (customEvent.detail && Array.isArray(customEvent.detail)) {
@@ -232,30 +182,8 @@ export default function App() {
 
     window.addEventListener(PRODUCTS_UPDATED_EVENT, handleProductsUpdated);
 
-    // Periodic auto-sync with GitHub JSON repository to ensure any new products appear immediately for all users across sessions & refreshes
-    const pollInterval = setInterval(() => {
-      GitHubStorageService.fetchProducts().then((remoteProducts) => {
-        if (remoteProducts && Array.isArray(remoteProducts) && remoteProducts.length > 0) {
-          const merged = ProductStorage.mergeWithCloudProducts(remoteProducts);
-          const filtered = merged.filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(filtered);
-        }
-      }).catch(() => {
-        ProductStorage.loadProductsAsync().then((items) => {
-          if (items && Array.isArray(items)) {
-            const filtered = items.filter(p => !ProductStorage.isDeleted(p.id));
-            setProducts(filtered);
-          }
-        }).catch(() => {});
-      });
-    }, 15000);
-
     return () => {
       window.removeEventListener(PRODUCTS_UPDATED_EVENT, handleProductsUpdated);
-      clearInterval(pollInterval);
-      if (unsubscribeFirestore) {
-        unsubscribeFirestore();
-      }
     };
   }, []);
 
@@ -264,58 +192,9 @@ export default function App() {
     setVisibleCount(24);
   }, [activeCategory, searchQuery, viewMode, selectedSort, selectedSize, selectedPriceRange, inStockOnly]);
 
-  // Dynamic Manual Re-fetch from Firebase Firestore
-  const handleSyncFirestore = useCallback(async () => {
-    if (!isFirebaseConfigured()) {
-      // Fallback local refresh
-      setIsSyncingFirestore(true);
-      const items = await ProductStorage.loadProductsAsync();
-      setProducts(items);
-      setIsSyncingFirestore(false);
-      setToastMessage(`Refreshed catalog (${items.length} items from local cache)`);
-      return;
-    }
-
-    setIsSyncingFirestore(true);
-    try {
-      const cloudProducts = await FirestoreProductService.fetchProducts();
-      const filtered = (cloudProducts || []).filter(p => !ProductStorage.isDeleted(p.id));
-      setProducts(filtered);
-      ProductStorage.saveProducts(filtered);
-      if (filtered.length > 0) {
-        setToastMessage(`✨ Successfully refreshed catalog (${filtered.length} items)!`);
-      } else {
-        setToastMessage('Catalog is currently empty.');
-      }
-    } catch (err: any) {
-      console.error('Catalog refresh error:', err);
-      setToastMessage('Refreshed from catalog cache.');
-    } finally {
-      setIsSyncingFirestore(false);
-    }
-  }, []);
-
   const refreshProducts = () => {
-    if (isFirebaseConfigured()) {
-      FirestoreProductService.fetchProducts()
-        .then((cloudProducts) => {
-          const filtered = (cloudProducts || []).filter(p => !ProductStorage.isDeleted(p.id));
-          setProducts(filtered);
-          ProductStorage.saveProducts(filtered);
-          setIsFirestoreConnected(true);
-        })
-        .catch(() => {
-          setIsFirestoreConnected(false);
-          ProductStorage.loadProductsAsync().then((items) => {
-            setProducts((items || []).filter(p => !ProductStorage.isDeleted(p.id)));
-          });
-        });
-    } else {
-      setIsFirestoreConnected(false);
-      ProductStorage.loadProductsAsync().then((allProducts) => {
-        setProducts((allProducts || []).filter(p => !ProductStorage.isDeleted(p.id)));
-      });
-    }
+    const items = ProductStorage.getProducts().filter(p => !ProductStorage.isDeleted(p.id));
+    setProducts(items);
     setIsAdminSetupComplete(AdminStorage.isSetupComplete());
   };
 
@@ -736,32 +615,29 @@ export default function App() {
                   </button>
                 </>
               ) : products.length === 0 ? (
-                <div className="py-6 space-y-4 max-w-lg mx-auto">
-                  <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#2B050B] to-[#4A0E17] text-[#D4AF37] flex items-center justify-center mx-auto border-2 border-[#D4AF37] shadow-lg">
-                    <Sparkles className="w-8 h-8 text-[#FDE047] animate-pulse" />
+                <div className="py-12 sm:py-16 space-y-3 max-w-md mx-auto text-center">
+                  <div className="w-12 h-12 rounded-full bg-[#FAF7F2] text-[#800020] flex items-center justify-center mx-auto border border-[#D4AF37]/40 shadow-xs">
+                    <ShoppingBag className="w-5 h-5 text-[#800020]" />
                   </div>
                   
-                  <div className="space-y-1.5">
-                    <span className="text-[10px] uppercase font-bold tracking-widest text-[#4A0E17] bg-[#D4AF37]/20 px-3 py-1 rounded-full border border-[#D4AF37]/40 inline-block">
-                      Exclusive Handloom Edit
-                    </span>
-                    <h3 style={{ fontFamily: 'Georgia, serif' }} className="text-xl sm:text-2xl italic font-bold text-[#32080F]">
-                      New Festive Collection Arriving Soon
+                  <div className="space-y-1">
+                    <h3 style={{ fontFamily: 'Georgia, serif' }} className="text-xl sm:text-2xl italic font-bold text-[#1C1917]">
+                      New Collection Curating Now
                     </h3>
-                    <p className="text-xs text-gray-600 max-w-md mx-auto leading-relaxed pt-1">
-                      ഞങ്ങളുടെ പുതിയ ട്രെഡീഷണൽ കാസവ് സാരികളും ഡിസൈനർ കോ-ഓർഡ് സെറ്റുകളും ഓൺലൈൻ കാറ്റലോഗിലേക്ക് അപ്‌ലോഡ് ചെയ്തു വരുന്നു. കസ്റ്റം ഓർഡറുകൾക്കും കളക്ഷൻ വിവരങ്ങൾക്കും വാട്സാപ്പ് വഴി ബന്ധപ്പെടാം.
+                    <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                      Handcrafted authentic pieces will be added shortly. Inquiries and custom requests are welcome via WhatsApp.
                     </p>
                   </div>
 
-                  <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
+                  <div className="pt-2 flex items-center justify-center">
                     <a
-                      href={`https://wa.me/${CONTACT_NUMBERS[0].value}?text=${encodeURIComponent('Hello Yaarika Collections, I would like to inquire about your upcoming boutique collections and custom orders.')}`}
+                      href={`https://wa.me/${CONTACT_NUMBERS[0].value}?text=${encodeURIComponent('Hello Yaarika Collections, I would like to inquire about your boutique collections.')}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="w-full sm:w-auto px-6 py-2.5 rounded-full bg-[#25D366] text-white hover:bg-emerald-600 text-xs font-bold uppercase tracking-wider transition-all shadow-md flex items-center justify-center gap-2"
+                      className="px-5 py-2 rounded-lg bg-[#25D366] text-white hover:bg-emerald-600 text-xs font-semibold tracking-wide transition-all shadow-xs flex items-center gap-2"
                     >
                       <MessageCircle className="w-4 h-4" />
-                      <span>WhatsApp Custom Inquiry</span>
+                      <span>WhatsApp Inquiry</span>
                     </a>
                   </div>
                 </div>
@@ -858,6 +734,7 @@ export default function App() {
 
       {/* TOAST NOTIFICATION */}
       <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
+
 
       {/* SMOOTH SCROLL TO TOP FLOATING BUTTON */}
       {showScrollTop && (

@@ -142,7 +142,7 @@ export const ExcelProductUploader: React.FC<ExcelProductUploaderProps> = ({
     }
   };
 
-  // Commit and Import to Catalog & Firestore
+  // Commit and Import to Catalog & Google Sheets
   const handleConfirmImport = async () => {
     if (parsedRows.length === 0) return;
 
@@ -167,7 +167,7 @@ export const ExcelProductUploader: React.FC<ExcelProductUploaderProps> = ({
       const res = ProductStorage.bulkAddProducts(productsToImport);
 
       setImportSuccessCount(res.added);
-      onToast(`Successfully added ${res.added} products from Excel to website & Firestore!`);
+      onToast(`Successfully added ${res.added} products from Excel to website & Google Sheets!`);
       onRefreshCatalog();
       onImportComplete(res.added);
 
@@ -208,11 +208,11 @@ export const ExcelProductUploader: React.FC<ExcelProductUploaderProps> = ({
             <h4 className="font-cinzel text-sm sm:text-base font-bold text-[#4A0E17] flex items-center gap-2">
               <span>Excel (.xlsx / .xls) &amp; CSV Sheet Upload</span>
               <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold uppercase">
-                Direct Image Sync
+                Google Sheets Auto-Sync
               </span>
             </h4>
             <p className="text-xs text-gray-600 mt-0.5 max-w-xl">
-              Excel ഷീറ്റിൽ ടൈറ്റിൽ, വില, സൈസ്, ഇമേജ് ലിങ്ക് (Image URL/Google Drive) നൽകി ഒറ്റ ക്ലിക്കിൽ എല്ലാ ഉൽപ്പന്നങ്ങളും വെബ്‌സൈറ്റിലേക്ക് ചേർക്കാം.
+              Excel / CSV ഷീറ്റിൽ ടൈറ്റിൽ, വില, സൈസ്, ഇമേജ് ലിങ്ക് നൽകി ഉൽപ്പന്നങ്ങൾ ചേർക്കുമ്പോൾ അവ വെബ്‌സൈറ്റിൽ ഡിസ്‌പ്ലേ ചെയ്യുകയും കണക്റ്റ് ചെയ്ത Google Sheet-ലേക്ക് ഓട്ടോമാറ്റിക്കായി ആഡ് ആവുകയും ചെയ്യും.
             </p>
           </div>
         </div>
@@ -299,7 +299,7 @@ export const ExcelProductUploader: React.FC<ExcelProductUploaderProps> = ({
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
             <span>
-              Successfully uploaded <strong>{importSuccessCount}</strong> products with photos to website and synced to Firestore!
+              Successfully uploaded <strong>{importSuccessCount}</strong> products to website &amp; Google Sheets!
             </span>
           </div>
           <button

@@ -44,6 +44,7 @@ export const BannerSliderManager: React.FC<BannerSliderManagerProps> = ({ onToas
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [isProcessingImage, setIsProcessingImage] = useState<boolean>(false);
   const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
+  const [showResetModal, setShowResetModal] = useState<boolean>(false);
 
   // Form State
   const [title, setTitle] = useState<string>('');
@@ -152,11 +153,14 @@ export const BannerSliderManager: React.FC<BannerSliderManagerProps> = ({ onToas
   };
 
   const handleResetDefaults = () => {
-    if (window.confirm('Restore original 4 default slides? Any custom slides will be replaced with defaults.')) {
-      BannerStorage.resetToDefaults();
-      refreshBanners();
-      onToast('🔄 Reset to default slides complete.');
-    }
+    setShowResetModal(true);
+  };
+
+  const confirmResetDefaults = () => {
+    BannerStorage.resetToDefaults();
+    refreshBanners();
+    onToast('🔄 Reset to default slides complete.');
+    setShowResetModal(false);
   };
 
   return (
@@ -553,6 +557,39 @@ export const BannerSliderManager: React.FC<BannerSliderManagerProps> = ({ onToas
                 className="flex-1 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow"
               >
                 Yes, Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Defaults Confirmation Modal */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-amber-200 space-y-4 animate-scale-up">
+            <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">
+              <RefreshCw className="w-6 h-6" />
+            </div>
+            <div className="text-center">
+              <h4 className="font-cinzel text-base font-bold text-gray-900">Reset Default Slides?</h4>
+              <p className="text-xs text-gray-600 mt-1 leading-relaxed">
+                Restore the original 4 default slides? Any custom slides will be replaced with defaults.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                className="flex-1 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmResetDefaults}
+                className="flex-1 py-2 rounded-lg bg-[#4A0E17] hover:bg-[#32080F] text-[#D4AF37] text-xs font-bold shadow cursor-pointer border border-[#D4AF37]"
+              >
+                Yes, Reset Defaults
               </button>
             </div>
           </div>

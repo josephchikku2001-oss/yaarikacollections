@@ -1,26 +1,16 @@
 import { Product, AdminCredentials, InquiryLog } from '../types';
 import { INITIAL_PRODUCTS } from '../data/initialProducts';
-import { GitHubStorageService } from './githubStorage';
-import { GoogleSheetsService } from './googleSheetsStorage';
-
-// Background sync from Google Sheets on app startup
-if (typeof window !== 'undefined') {
-  GoogleSheetsService.fetchProducts().then(cloudProducts => {
-    if (Array.isArray(cloudProducts) && cloudProducts.length > 0) {
-      ProductStorage.mergeWithCloudProducts(cloudProducts);
-    }
-  }).catch(() => {});
-}
+import { GoogleSheetsService } from './googleSheetsService';
 
 const KEYS = {
   ADMIN: 'yaarika_admin_credentials_v1',
-  PRODUCTS: 'yaarika_products_v10',
-  CUSTOM_PRODUCTS: 'yaarika_admin_custom_products_v10',
-  CUSTOM_EDITS: 'yaarika_admin_custom_edits_v10',
-  DELETED_IDS: 'yaarika_admin_deleted_ids_v10',
+  PRODUCTS: 'yaarika_products_v12',
+  CUSTOM_PRODUCTS: 'yaarika_admin_custom_products_v12',
+  CUSTOM_EDITS: 'yaarika_admin_custom_edits_v12',
+  DELETED_IDS: 'yaarika_admin_deleted_ids_v12',
   WISHLIST: 'yaarika_wishlist_v1',
   INQUIRIES: 'yaarika_inquiries_v1',
-  CATALOG_WIPED_FLAG: 'yaarika_catalog_wiped_v10'
+  CATALOG_WIPED_FLAG: 'yaarika_catalog_wiped_v12'
 };
 
 export const PRODUCTS_UPDATED_EVENT = 'yaarika_products_updated';
@@ -165,63 +155,41 @@ export const AdminStorage = {
 
 // PRODUCT CATALOG MANAGEMENT SERVICES (Supports UNLIMITED Products with IndexedDB & Memory Cache)
 const IDB_CONFIG = {
-  DB_NAME: 'yaarika_boutique_db_v10',
+  DB_NAME: 'yaarika_boutique_db_v12',
   STORE_NAME: 'catalog_products',
   VERSION: 1
 };
 
 let memoryProductsCache: Product[] | null = null;
 
-// Initial 5 product IDs that the user requested to permanently remove
-const REMOVED_DEFAULT_IDS = [
-  'prod-saree-01',
-  'prod-saree-02',
-  'prod-churidar-01',
-  'prod-churidar-02',
-  'prod-coord-01'
-];
-
-// Ensure legacy removed products remain deleted without wiping active custom catalog
-/*
+// Wipe legacy sample items and reset old caches to guarantee clean slate
 function checkAndPerformWipe(): void {
   try {
     if (typeof window !== 'undefined') {
-      const cleanSlateFlag = 'yaarika_clean_slate_v11';
+      const cleanSlateFlag = 'yaarika_clean_slate_v12';
       const isCleaned = localStorage.getItem(cleanSlateFlag);
       if (!isCleaned) {
+        // Clear all previous storage versions
+        for (let i = 1; i <= 11; i++) {
+          localStorage.removeItem(`yaarika_products_v${i}`);
+          localStorage.removeItem(`yaarika_admin_custom_products_v${i}`);
+          localStorage.removeItem(`yaarika_admin_custom_edits_v${i}`);
+          localStorage.removeItem(`yaarika_admin_deleted_ids_v${i}`);
+        }
         localStorage.removeItem(KEYS.PRODUCTS);
         localStorage.removeItem(KEYS.CUSTOM_PRODUCTS);
-        localStorage.setItem(cleanSlateFlag, 'true');
-      }
+        localStorage.removeItem(KEYS.CUSTOM_EDITS);
+        localStorage.removeItem('yaarika_clean_slate_v11');
 
-      const isWiped = localStorage.getItem(KEYS.CATALOG_WIPED_FLAG);
-      if (!isWiped) {
-        // Clean obsolete version storage keys
-        localStorage.removeItem('yaarika_products_v4');
-        localStorage.removeItem('yaarika_products_v5');
-        localStorage.removeItem('yaarika_products_v6');
-        localStorage.removeItem('yaarika_products_v7');
-        localStorage.removeItem('yaarika_products_v8');
-        localStorage.removeItem('yaarika_products_v9');
-        localStorage.removeItem('yaarika_admin_custom_products_v5');
-        localStorage.removeItem('yaarika_admin_custom_products_v6');
-        localStorage.removeItem('yaarika_admin_custom_products_v7');
-        localStorage.removeItem('yaarika_admin_custom_products_v8');
-        localStorage.removeItem('yaarika_admin_custom_products_v9');
-
-        // Persist deleted IDs for the 5 removed items
-        const existingDeleted = getStoredDeletedIds();
-        const combinedDeleted = Array.from(new Set([...existingDeleted, ...REMOVED_DEFAULT_IDS]));
-        saveStoredDeletedIds(combinedDeleted);
-
-        localStorage.setItem(KEYS.CATALOG_WIPED_FLAG, 'true');
-
-        // Also clean up from Firestore in background if configured
-        if (isFirebaseConfigured()) {
-          REMOVED_DEFAULT_IDS.forEach(id => {
-            FirestoreProductService.deleteProduct(id).catch(() => {});
-          });
+        // Clear legacy IndexedDB if available
+        if (window.indexedDB && window.indexedDB.deleteDatabase) {
+          try {
+            window.indexedDB.deleteDatabase('yaarika_boutique_db_v10');
+            window.indexedDB.deleteDatabase('yaarika_boutique_db_v11');
+          } catch {}
         }
+
+        localStorage.setItem(cleanSlateFlag, 'true');
       }
     }
   } catch (e) {
@@ -230,7 +198,6 @@ function checkAndPerformWipe(): void {
 }
 
 checkAndPerformWipe();
-*/
 
 function openIndexedDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -342,33 +309,26 @@ function loadInitialCatalog(): Product[] {
     let baseCatalog: Product[] = [];
 
     if (data) {
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        baseCatalog = parsed;
-      }
+      try {
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          baseCatalog = parsed;
+        }
+      } catch {}
     }
 
-    if (baseCatalog.length === 0) {
-      baseCatalog = INITIAL_PRODUCTS;
-    }
-
-    // Apply edits and deleted IDs to base catalog
+    // Apply edits and deleted IDs to base catalog, filtering out any sample items
     const processedBase = baseCatalog
-      .filter(p => !deletedIds.has(p.id))
+      .filter(p => p && p.id && !p.id.startsWith('prod-sample-') && !deletedIds.has(p.id))
       .map(p => customEdits[p.id] ? { ...p, ...customEdits[p.id] } as Product : p);
 
-    // Merge any new default initial products that haven't been deleted
-    const processedIds = new Set(processedBase.map(p => p.id));
-    const newInitialProducts = INITIAL_PRODUCTS.filter(p => !processedIds.has(p.id) && !deletedIds.has(p.id));
-
     // Merge custom admin products, ensuring all custom items are preserved at the top
-    const uniqueCustom = customItems.filter(p => !deletedIds.has(p.id));
+    const uniqueCustom = customItems.filter(p => p && p.id && !p.id.startsWith('prod-sample-') && !deletedIds.has(p.id));
     const customIds = new Set(uniqueCustom.map(p => p.id));
 
     const finalCatalog = [
       ...uniqueCustom, 
-      ...processedBase.filter(p => !customIds.has(p.id)), 
-      ...newInitialProducts.filter(p => !customIds.has(p.id))
+      ...processedBase.filter(p => !customIds.has(p.id))
     ];
 
     // Cache to localStorage
@@ -379,7 +339,7 @@ function loadInitialCatalog(): Product[] {
     return finalCatalog;
   } catch (e) {
     console.warn('LocalStorage catalog read warning, using safe fallback:', e);
-    return INITIAL_PRODUCTS;
+    return [];
   }
 }
 
@@ -389,7 +349,7 @@ export const ProductStorage = {
     if (memoryProductsCache === null) {
       memoryProductsCache = loadInitialCatalog();
       if (memoryProductsCache === null) {
-        memoryProductsCache = INITIAL_PRODUCTS;
+        memoryProductsCache = [];
       }
       // Populate IndexedDB in background
       persistToIndexedDB(memoryProductsCache);
@@ -397,38 +357,21 @@ export const ProductStorage = {
     return memoryProductsCache;
   },
 
-  // Asynchronous loader from Server API (/api/products) and IndexedDB
+  // Asynchronous loader from IndexedDB, LocalStorage & Google Sheets
   async loadProductsAsync(): Promise<Product[]> {
-    // 1. Try fetching from server API /api/products first for cross-device & refresh persistence
-    try {
-      const res = await fetch('/api/products');
-      if (res.ok) {
-        const serverProducts = await res.json();
-        if (Array.isArray(serverProducts) && serverProducts.length > 0) {
-          const deletedIds = new Set(getStoredDeletedIds());
-          const filteredServer = serverProducts.filter(p => !deletedIds.has(p.id));
-          const customItems = getStoredCustomProducts().filter(p => !deletedIds.has(p.id));
-          
-          const map = new Map<string, Product>();
-          customItems.forEach(p => map.set(p.id, p));
-          filteredServer.forEach(p => {
-            if (!map.has(p.id)) map.set(p.id, p);
-          });
-          const finalProducts = Array.from(map.values());
-          
-          memoryProductsCache = finalProducts;
-          persistToIndexedDB(finalProducts);
-          try {
-            localStorage.setItem(KEYS.PRODUCTS, JSON.stringify(finalProducts));
-          } catch {}
-          return finalProducts;
+    // 1. If Google Sheets is configured, load products from Google Sheet and merge
+    if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured()) {
+      try {
+        const gsRes = await GoogleSheetsService.fetchProductsFromSheet();
+        if (gsRes.success && gsRes.products && gsRes.products.length > 0) {
+          const merged = this.mergeWithCloudProducts(gsRes.products);
+          return merged;
         }
+      } catch (err) {
+        console.warn('Google Sheets async pull error:', err);
       }
-    } catch (e) {
-      console.warn('Server /api/products load warning:', e);
     }
 
-    // 2. Fall back to IndexedDB
     try {
       const db = await openIndexedDB();
       const tx = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
@@ -439,16 +382,16 @@ export const ProductStorage = {
         req.onerror = () => reject(req.error);
       });
 
-      if (items.length > 0) {
-        memoryProductsCache = items;
-        return items;
+      if (items && Array.isArray(items) && items.length > 0) {
+        const cleaned = items.filter(p => p && p.id && !p.id.startsWith('prod-sample-'));
+        memoryProductsCache = cleaned;
+        return cleaned;
       }
     } catch (e) {
       console.warn('Could not read from IndexedDB, falling back to sync cache:', e);
     }
 
-    const syncItems = this.getProducts();
-    // Also save syncItems to IndexedDB to bootstrap it
+    const syncItems = this.getProducts().filter(p => p && p.id && !p.id.startsWith('prod-sample-'));
     persistToIndexedDB(syncItems);
     return syncItems;
   },
@@ -456,31 +399,16 @@ export const ProductStorage = {
   saveProducts(products: Product[]): void {
     memoryProductsCache = products;
 
-    // Try saving to localStorage (stores up to quota limit, IndexedDB stores unlimited)
     try {
       localStorage.setItem(KEYS.PRODUCTS, JSON.stringify(products));
     } catch (e) {
-      console.warn('LocalStorage full, saving snapshot in localStorage and full unlimited catalog in IndexedDB.', e);
       try {
-        // Store first 100 items in localStorage as quick cache
         localStorage.setItem(KEYS.PRODUCTS, JSON.stringify(products.slice(0, 100)));
       } catch {}
     }
 
-    // Persist unlimited catalog in IndexedDB
     persistToIndexedDB(products);
-
-    // Notify all components in real-time
     broadcastProductsUpdate(products);
-
-    // Sync to Server API in background for cross-system and refresh persistence
-    if (typeof window !== 'undefined') {
-      fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ products })
-      }).catch(() => {});
-    }
   },
 
   // Safely merges cloud products without ever losing locally uploaded products
@@ -506,10 +434,6 @@ export const ProductStorage = {
     const merged = Array.from(map.values());
     this.saveProducts(merged);
 
-    // Sync any missing local custom products up to GitHub in the background (batched)
-    if (customItems.length > 0) {
-      GitHubStorageService.updateProducts(merged, 'Sync local custom products to GitHub').catch(() => {});
-    }
 
     return merged;
   },
@@ -557,13 +481,12 @@ export const ProductStorage = {
     const updated = [createdProduct, ...currentProducts.filter(p => p.id !== createdProduct.id)];
     this.saveProducts(updated);
 
-    // Sync to GitHub if configured
-    GitHubStorageService.saveProduct(createdProduct).catch(err => {
-        console.warn('Background GitHub save note:', err?.message || err);
-    });
-
-    // Sync to Google Sheets if configured
-    GoogleSheetsService.updateProducts(updated).catch(() => {});
+    // Auto-sync to connected Google Sheet
+    if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured() && GoogleSheetsService.getAutoSyncEnabled()) {
+      GoogleSheetsService.appendProduct(createdProduct).catch(err => {
+        console.warn('Auto-sync product to Google Sheets failed:', err);
+      });
+    }
 
     return createdProduct;
   },
@@ -612,13 +535,12 @@ export const ProductStorage = {
     const updated = [...createdList, ...currentProducts.filter(p => !createdList.some(c => c.id === p.id))];
     this.saveProducts(updated);
 
-    // Sync to GitHub if configured
-    GitHubStorageService.updateProducts(updated, 'Bulk added products').catch(err => {
-        console.warn('Background GitHub bulk sync note:', err?.message || err);
-    });
-
-    // Sync to Google Sheets if configured
-    GoogleSheetsService.updateProducts(updated).catch(() => {});
+    // Auto-sync all bulk items (from Excel / CSV / Multi-layer) to connected Google Sheet
+    if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured() && GoogleSheetsService.getAutoSyncEnabled()) {
+      GoogleSheetsService.appendProducts(createdList).catch(err => {
+        console.warn('Auto-sync bulk products to Google Sheets failed:', err);
+      });
+    }
 
     return {
       added: createdList.length,
@@ -643,14 +565,6 @@ export const ProductStorage = {
     }
 
     this.saveProducts(updated);
-
-    // Sync to GitHub if configured
-    GitHubStorageService.saveProduct(updatedProduct).catch(err => {
-        console.warn('Background GitHub update warning:', err);
-    });
-
-    // Sync to Google Sheets if configured
-    GoogleSheetsService.updateProducts(updated).catch(() => {});
   },
 
   toggleStockStatus(id: string): Product[] {
@@ -683,14 +597,6 @@ export const ProductStorage = {
     }
 
     this.saveProducts(updated);
-
-    // Sync deletion to GitHub if configured
-    GitHubStorageService.deleteProduct(id).catch(err => {
-        console.warn('Background GitHub delete warning:', err);
-    });
-
-    // Sync deletion to Google Sheets if configured
-    GoogleSheetsService.updateProducts(updated).catch(() => {});
   },
 
   isDeleted(id: string): boolean {
@@ -706,12 +612,19 @@ export const ProductStorage = {
     saveStoredCustomProducts([]);
     saveStoredCustomEdits({});
     saveStoredDeletedIds([]);
-    this.saveProducts(INITIAL_PRODUCTS);
-    return INITIAL_PRODUCTS;
+    this.saveProducts([]);
+    return [];
   },
 
-  clearAllProducts(): void {
+  async clearAllProducts(): Promise<void> {
+    const currentProducts = this.getProducts();
+    const currentIds = currentProducts.map(p => p.id);
+    const existingDeleted = getStoredDeletedIds();
+    const newDeleted = Array.from(new Set([...existingDeleted, ...currentIds]));
+    saveStoredDeletedIds(newDeleted);
+
     saveStoredCustomProducts([]);
+    saveStoredCustomEdits({});
     this.saveProducts([]);
   },
 

@@ -103,7 +103,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAdmin }) => {
           <p>
             © {new Date().getFullYear()} <strong className="text-[#FDE047]">Yaarika Collections</strong>. All Rights Reserved. Handcrafted in Kerala.
           </p>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <a
               href={`https://wa.me/${CONTACT_NUMBERS[0].value}`}
               target="_blank"
@@ -113,6 +113,15 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAdmin }) => {
               <Phone className="w-3 h-3" />
               <span>WhatsApp Us</span>
             </a>
+            {onOpenAdmin && (
+              <button
+                onClick={onOpenAdmin}
+                className="text-[#D4AF37]/50 hover:text-[#D4AF37] transition-colors text-[10.5px] uppercase tracking-wider flex items-center gap-1 cursor-pointer font-medium"
+                title="Admin Portal Login"
+              >
+                <span>Admin Login</span>
+              </button>
+            )}
           </div>
         </div>
 
