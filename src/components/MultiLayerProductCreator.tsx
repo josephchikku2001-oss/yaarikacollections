@@ -19,6 +19,7 @@ import {
 import { Product, CategoryType, SizeType } from '../types';
 import { ProductStorage } from '../services/storage';
 import { compressImageFile } from '../utils/imageCompressor';
+import { cleanAndParsePrice } from '../utils/inventory';
 
 interface MultiLayerProductCreatorProps {
   onSuccess: (count: number) => void;
@@ -421,10 +422,10 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
   // Check if first product layer has valid basic info (Title and Price)
   const isFirstLayerValid = layers.length > 0 && 
     layers[0].title.trim().length > 0 && 
-    parseFloat(layers[0].price) > 0;
+    cleanAndParsePrice(layers[0].price) > 0;
 
   // Count how many layers are valid
-  const validLayers = layers.filter(l => l.title.trim().length > 0 && parseFloat(l.price) > 0);
+  const validLayers = layers.filter(l => l.title.trim().length > 0 && cleanAndParsePrice(l.price) > 0);
   const totalLayersCount = layers.length;
 
   // Validate and submit all layers
@@ -439,8 +440,8 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
     // In edit mode:
     if (isEditMode && editingProduct) {
       const l = layers[0];
-      const priceNum = parseFloat(l.price);
-      const origPriceNum = l.originalPrice ? parseFloat(l.originalPrice) : undefined;
+      const priceNum = cleanAndParsePrice(l.price);
+      const origPriceNum = l.originalPrice ? cleanAndParsePrice(l.originalPrice) : undefined;
 
       const finalSizeStock: Partial<Record<SizeType, number>> = {};
       let totalUnits = 0;
@@ -503,8 +504,8 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
         return;
       }
 
-      const priceNum = parseFloat(l.price);
-      if (isNaN(priceNum) || priceNum <= 0) {
+      const priceNum = cleanAndParsePrice(l.price);
+      if (priceNum <= 0) {
         onToast(`Layer #${layerNum}: Please enter a valid Offer Price (₹).`);
         return;
       }
@@ -512,7 +513,7 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
       const layerImages = l.images && l.images.length > 0 ? l.images : (l.imageUrl ? [l.imageUrl] : []);
       const primaryImage = layerImages[0] || l.imageUrl.trim() || 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=800&q=80';
 
-      const origPriceNum = l.originalPrice ? parseFloat(l.originalPrice) : undefined;
+      const origPriceNum = l.originalPrice ? cleanAndParsePrice(l.originalPrice) : undefined;
       const finalSizeStock: Partial<Record<SizeType, number>> = {};
       let totalUnits = 0;
 
@@ -616,7 +617,7 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
         
         {layers.map((layer, index) => {
           const layerNumber = index + 1;
-          const isComplete = layer.title.trim() && parseFloat(layer.price) > 0;
+          const isComplete = layer.title.trim() && cleanAndParsePrice(layer.price) > 0;
           const isExpanded = layer.isExpanded ?? true;
 
           return (

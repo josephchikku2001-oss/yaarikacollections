@@ -56,6 +56,13 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
   const [showPushConfirm, setShowPushConfirm] = useState<boolean>(false);
 
   useEffect(() => {
+    // Sync shared config from server
+    GoogleSheetsService.initSharedConfig().then(id => {
+      if (id) {
+        setSpreadsheetIdInput(id);
+      }
+    }).catch(() => {});
+
     // Listen for auth state
     const unsubscribe = initAuth(
       (user) => {

@@ -169,16 +169,13 @@ function checkAndPerformWipe(): void {
       const cleanSlateFlag = 'yaarika_clean_slate_v12';
       const isCleaned = localStorage.getItem(cleanSlateFlag);
       if (!isCleaned) {
-        // Clear all previous storage versions
+        // Clear all previous legacy versions only (v1 to v11)
         for (let i = 1; i <= 11; i++) {
           localStorage.removeItem(`yaarika_products_v${i}`);
           localStorage.removeItem(`yaarika_admin_custom_products_v${i}`);
           localStorage.removeItem(`yaarika_admin_custom_edits_v${i}`);
           localStorage.removeItem(`yaarika_admin_deleted_ids_v${i}`);
         }
-        localStorage.removeItem(KEYS.PRODUCTS);
-        localStorage.removeItem(KEYS.CUSTOM_PRODUCTS);
-        localStorage.removeItem(KEYS.CUSTOM_EDITS);
         localStorage.removeItem('yaarika_clean_slate_v11');
 
         // Clear legacy IndexedDB if available
@@ -351,20 +348,45 @@ export const ProductStorage = {
       if (memoryProductsCache === null) {
         memoryProductsCache = [];
       }
-      // Populate IndexedDB in background
-      persistToIndexedDB(memoryProductsCache);
+      // Only persist to IndexedDB if there are items, never wipe with empty array
+      if (memoryProductsCache.length > 0) {
+        persistToIndexedDB(memoryProductsCache);
+      }
     }
     return memoryProductsCache;
   },
 
-  // Asynchronous loader from IndexedDB, LocalStorage & Google Sheets
+  // Asynchronous loader from Backend Server, Google Sheets, IndexedDB & LocalStorage
   async loadProductsAsync(): Promise<Product[]> {
-    // 1. If Google Sheets is configured, load products from Google Sheet and merge
+    // 1. Initialize shared Google Sheet ID from backend server config
+    await GoogleSheetsService.initSharedConfig().catch(() => {});
+
+    // 2. Fetch products from Backend Server storage (persisted on disk, available on ALL systems & devices)
+    try {
+      const serverRes = await fetch('/api/products');
+      if (serverRes.ok) {
+        const data = await serverRes.json();
+        if (data && data.success && Array.isArray(data.products) && data.products.length > 0) {
+          const merged = this.mergeWithCloudProducts(data.products);
+          return merged;
+        }
+      }
+    } catch (e) {
+      console.warn('Backend server products fetch warning:', e);
+    }
+
+    // 3. If Google Sheets is configured, load products from Google Sheet and merge
     if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured()) {
       try {
         const gsRes = await GoogleSheetsService.fetchProductsFromSheet();
         if (gsRes.success && gsRes.products && gsRes.products.length > 0) {
           const merged = this.mergeWithCloudProducts(gsRes.products);
+          // Sync pulled products to backend server as well
+          fetch('/api/products/replace-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ products: merged })
+          }).catch(() => {});
           return merged;
         }
       } catch (err) {
@@ -372,6 +394,7 @@ export const ProductStorage = {
       }
     }
 
+    // 4. Fallback to IndexedDB
     try {
       const db = await openIndexedDB();
       const tx = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
@@ -392,7 +415,6 @@ export const ProductStorage = {
     }
 
     const syncItems = this.getProducts().filter(p => p && p.id && !p.id.startsWith('prod-sample-'));
-    persistToIndexedDB(syncItems);
     return syncItems;
   },
 
@@ -481,6 +503,15 @@ export const ProductStorage = {
     const updated = [createdProduct, ...currentProducts.filter(p => p.id !== createdProduct.id)];
     this.saveProducts(updated);
 
+    // Save to Backend server so product is instantly visible across all systems and page refreshes
+    fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createdProduct)
+    }).catch(err => {
+      console.warn('Backend server product save error:', err);
+    });
+
     // Auto-sync to connected Google Sheet
     if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured() && GoogleSheetsService.getAutoSyncEnabled()) {
       GoogleSheetsService.appendProduct(createdProduct).catch(err => {
@@ -535,6 +566,15 @@ export const ProductStorage = {
     const updated = [...createdList, ...currentProducts.filter(p => !createdList.some(c => c.id === p.id))];
     this.saveProducts(updated);
 
+    // Save to Backend server so bulk products are instantly visible across all systems and page refreshes
+    fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createdList)
+    }).catch(err => {
+      console.warn('Backend server bulk products save error:', err);
+    });
+
     // Auto-sync all bulk items (from Excel / CSV / Multi-layer) to connected Google Sheet
     if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured() && GoogleSheetsService.getAutoSyncEnabled()) {
       GoogleSheetsService.appendProducts(createdList).catch(err => {
@@ -565,6 +605,13 @@ export const ProductStorage = {
     }
 
     this.saveProducts(updated);
+
+    // Sync update to backend server
+    fetch(`/api/products/${updatedProduct.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatedProduct)
+    }).catch(() => {});
   },
 
   toggleStockStatus(id: string): Product[] {
@@ -597,6 +644,11 @@ export const ProductStorage = {
     }
 
     this.saveProducts(updated);
+
+    // Sync deletion to backend server
+    fetch(`/api/products/${id}`, {
+      method: 'DELETE'
+    }).catch(() => {});
   },
 
   isDeleted(id: string): boolean {
@@ -613,6 +665,7 @@ export const ProductStorage = {
     saveStoredCustomEdits({});
     saveStoredDeletedIds([]);
     this.saveProducts([]);
+    fetch('/api/products/clear', { method: 'POST' }).catch(() => {});
     return [];
   },
 
@@ -626,6 +679,8 @@ export const ProductStorage = {
     saveStoredCustomProducts([]);
     saveStoredCustomEdits({});
     this.saveProducts([]);
+
+    fetch('/api/products/clear', { method: 'POST' }).catch(() => {});
   },
 
   // Export full catalog as JSON string

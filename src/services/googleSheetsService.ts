@@ -47,24 +47,66 @@ export const GoogleSheetsService = {
     return trimmed;
   },
 
+  _memorySpreadsheetId: null as string | null,
+  _initialized: false,
+
+  // Synchronize Google Sheet config with backend server for cross-device support
+  async initSharedConfig(): Promise<string | null> {
+    try {
+      const res = await fetch('/api/sheet-config');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.config && data.config.spreadsheetId) {
+          const serverId = data.config.spreadsheetId;
+          this._memorySpreadsheetId = serverId;
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, serverId);
+            if (data.config.sheetTab) {
+              localStorage.setItem(STORAGE_KEYS.SHEET_NAME, data.config.sheetTab);
+            }
+          }
+          this.notifyUpdate();
+          return serverId;
+        }
+      }
+    } catch (e) {
+      // Backend may be offline or in static preview
+    }
+    return this.getSpreadsheetId();
+  },
+
   getSpreadsheetId(): string | null {
+    if (this._memorySpreadsheetId) return this._memorySpreadsheetId;
     try {
       if (typeof window === 'undefined') return null;
-      return localStorage.getItem(STORAGE_KEYS.SPREADSHEET_ID) || null;
+      const stored = localStorage.getItem(STORAGE_KEYS.SPREADSHEET_ID) || null;
+      if (stored) {
+        this._memorySpreadsheetId = stored;
+        return stored;
+      }
     } catch {
       return null;
     }
+    return null;
   },
 
   setSpreadsheetId(id: string): void {
     try {
       const cleanId = this.extractSpreadsheetId(id);
+      this._memorySpreadsheetId = cleanId || null;
       if (cleanId) {
         localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, cleanId);
       } else {
         localStorage.removeItem(STORAGE_KEYS.SPREADSHEET_ID);
       }
       this.notifyUpdate();
+
+      // Persist to backend server so all visitors on all devices get this Sheet ID
+      fetch('/api/sheet-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spreadsheetId: cleanId, sheetTab: this.getSheetTabName() })
+      }).catch(() => {});
     } catch (e) {
       console.error('Failed to save spreadsheet ID:', e);
     }

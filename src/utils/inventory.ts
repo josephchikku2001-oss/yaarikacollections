@@ -89,3 +89,15 @@ export function isSizeInStock(product: Product, size: SizeType): boolean {
 
   return Boolean(product.inStock);
 }
+
+/**
+ * Robustly parses a price string or number, safely stripping any currency symbols, commas, or spaces.
+ * Example: '₹1,499' -> 1499, '2,500.50' -> 2500.5, 1850 -> 1850
+ */
+export function cleanAndParsePrice(val: string | number | undefined | null): number {
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  if (!val) return 0;
+  const clean = String(val).replace(/[^0-9.]/g, '');
+  const parsed = parseFloat(clean);
+  return isNaN(parsed) ? 0 : parsed;
+}

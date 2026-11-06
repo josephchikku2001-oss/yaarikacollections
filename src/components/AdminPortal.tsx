@@ -43,6 +43,7 @@ import { ExcelProductUploader } from './ExcelProductUploader';
 import { MultiLayerProductCreator } from './MultiLayerProductCreator';
 import { BannerSliderManager } from './BannerSliderManager';
 import { GoogleSheetsManager } from './GoogleSheetsManager';
+import { cleanAndParsePrice } from '../utils/inventory';
 import { GoogleSheetsService, GOOGLE_SHEETS_UPDATED_EVENT } from '../services/googleSheetsService';
 import { SAMPLE_SHOWCASE_PRODUCTS } from '../data/sampleShowcase';
 import { 
@@ -143,6 +144,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   useEffect(() => {
     setProducts(ProductStorage.getProducts());
+    ProductStorage.loadProductsAsync().then(items => {
+      if (items && Array.isArray(items)) {
+        setProducts(items);
+      }
+    }).catch(() => {});
   }, []);
 
   // Admin Login / First-Time Setup Handler
@@ -321,8 +327,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return;
     }
 
-    const priceNum = parseFloat(formPrice);
-    if (isNaN(priceNum) || priceNum <= 0) {
+    const priceNum = cleanAndParsePrice(formPrice);
+    if (priceNum <= 0) {
       onToast('Please enter a valid Offer / Selling Price in ₹ INR.');
       return;
     }
@@ -337,7 +343,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return;
     }
 
-    const origPriceNum = formOriginalPrice ? parseFloat(formOriginalPrice) : undefined;
+    const origPriceNum = formOriginalPrice ? cleanAndParsePrice(formOriginalPrice) : undefined;
 
     // Build sizeStock mapping
     const finalSizeStock: Partial<Record<SizeType, number>> = {};
