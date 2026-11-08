@@ -162,7 +162,7 @@ export default function App() {
     setIsAdminSetupComplete(AdminStorage.isSetupComplete());
     setIsLoadingCatalog(false);
 
-    // 2. Load from IndexedDB cache if available
+    // 2. Load from Firestore Cloud Database & caches
     ProductStorage.loadProductsAsync().then((items) => {
       if (items && Array.isArray(items)) {
         const filtered = items.filter(p => !ProductStorage.isDeleted(p.id));
@@ -170,7 +170,16 @@ export default function App() {
       }
     }).catch(() => {});
 
-    // 3. Listen to instant broadcast events when admin adds/edits/deletes products
+    // 3. Real-time Firebase Firestore Cloud Database Subscription
+    // Guarantees all products added on ANY device or computer appear instantly and stay saved permanently!
+    const unsubscribeFirestore = ProductStorage.subscribeToFirestore((cloudProducts) => {
+      if (cloudProducts && Array.isArray(cloudProducts)) {
+        const filtered = cloudProducts.filter(p => !ProductStorage.isDeleted(p.id));
+        setProducts(filtered);
+      }
+    });
+
+    // 4. Listen to instant broadcast events when admin adds/edits/deletes products locally
     const handleProductsUpdated = (event: Event) => {
       const customEvent = event as CustomEvent<Product[]>;
       if (customEvent.detail && Array.isArray(customEvent.detail)) {
@@ -183,6 +192,9 @@ export default function App() {
     window.addEventListener(PRODUCTS_UPDATED_EVENT, handleProductsUpdated);
 
     return () => {
+      if (unsubscribeFirestore) {
+        unsubscribeFirestore();
+      }
       window.removeEventListener(PRODUCTS_UPDATED_EVENT, handleProductsUpdated);
     };
   }, []);

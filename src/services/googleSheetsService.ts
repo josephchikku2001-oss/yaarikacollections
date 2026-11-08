@@ -1,6 +1,8 @@
 import { Product, CategoryType, SizeType } from '../types';
 import { getAccessToken } from './googleAuth';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { db } from './firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 const STORAGE_KEYS = {
   SPREADSHEET_ID: 'yaarika_google_sheet_id_v1',
@@ -108,8 +110,34 @@ export const GoogleSheetsService = {
   _memoryAppsScriptUrl: null as string | null,
   _initialized: false,
 
-  // Synchronize Google Sheet config with backend server for cross-device support
+  // Synchronize Google Sheet config with Firestore Cloud & Backend server for cross-device support
   async initSharedConfig(): Promise<{ spreadsheetId: string | null; appsScriptUrl: string | null }> {
+    // 1. Try fetching from Firestore settings
+    try {
+      const snap = await getDoc(doc(db, 'settings', 'googleSheetConfig'));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && data.value) {
+          try {
+            const parsed = JSON.parse(data.value);
+            if (parsed.spreadsheetId) this._memorySpreadsheetId = parsed.spreadsheetId;
+            if (parsed.appsScriptUrl) this._memoryAppsScriptUrl = parsed.appsScriptUrl;
+
+            if (typeof window !== 'undefined') {
+              if (parsed.spreadsheetId) localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, parsed.spreadsheetId);
+              if (parsed.appsScriptUrl) localStorage.setItem(STORAGE_KEYS.APPS_SCRIPT_URL, parsed.appsScriptUrl);
+              if (parsed.sheetTab) localStorage.setItem(STORAGE_KEYS.SHEET_NAME, parsed.sheetTab);
+            }
+            this.notifyUpdate();
+            return { spreadsheetId: this._memorySpreadsheetId, appsScriptUrl: this._memoryAppsScriptUrl };
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn('Firestore sheet config fetch notice:', e);
+    }
+
+    // 2. Fallback to backend server
     try {
       const res = await fetch('/api/sheet-config');
       if (res.ok) {
@@ -139,6 +167,25 @@ export const GoogleSheetsService = {
     };
   },
 
+  // Save current config to Firestore settings doc
+  async _saveToFirestoreConfig(): Promise<void> {
+    try {
+      const payload = {
+        spreadsheetId: this.getSpreadsheetId() || '',
+        appsScriptUrl: this.getAppsScriptUrl() || '',
+        sheetTab: this.getSheetTabName() || 'Sheet1'
+      };
+      await setDoc(doc(db, 'settings', 'googleSheetConfig'), {
+        id: 'googleSheetConfig',
+        key: 'googleSheetConfig',
+        value: JSON.stringify(payload),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Firestore sheet config save warning:', err);
+    }
+  },
+
   getAppsScriptUrl(): string | null {
     if (this._memoryAppsScriptUrl) return this._memoryAppsScriptUrl;
     try {
@@ -165,7 +212,8 @@ export const GoogleSheetsService = {
       }
       this.notifyUpdate();
 
-      // Persist to backend server
+      // Persist to Firestore Cloud and backend server
+      this._saveToFirestoreConfig();
       fetch('/api/sheet-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -202,7 +250,8 @@ export const GoogleSheetsService = {
       }
       this.notifyUpdate();
 
-      // Persist to backend server so all visitors on all devices get this Sheet ID
+      // Persist to Firestore Cloud and backend server
+      this._saveToFirestoreConfig();
       fetch('/api/sheet-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -225,6 +274,7 @@ export const GoogleSheetsService = {
     try {
       localStorage.setItem(STORAGE_KEYS.SHEET_NAME, name.trim() || 'Sheet1');
       this.notifyUpdate();
+      this._saveToFirestoreConfig();
 
       // Persist to backend server
       fetch('/api/sheet-config', {

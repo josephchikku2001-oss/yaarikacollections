@@ -1,6 +1,17 @@
 import { Product, AdminCredentials, InquiryLog } from '../types';
 import { INITIAL_PRODUCTS } from '../data/initialProducts';
 import { GoogleSheetsService } from './googleSheetsService';
+import { db, OperationType, handleFirestoreError } from './firebase';
+import { 
+  collection, 
+  doc, 
+  getDocs, 
+  setDoc, 
+  deleteDoc, 
+  writeBatch, 
+  onSnapshot, 
+  Unsubscribe 
+} from 'firebase/firestore';
 
 const KEYS = {
   ADMIN: 'yaarika_admin_credentials_v1',
@@ -340,6 +351,82 @@ function loadInitialCatalog(): Product[] {
   }
 }
 
+// Firestore product converters
+function cleanProductForFirestore(product: Product): Record<string, any> {
+  const clean: Record<string, any> = {
+    id: String(product.id || '').substring(0, 128),
+    title: String(product.title || 'Untitled Ensemble').trim().substring(0, 200),
+    category: String(product.category || 'Traditional Sarees').trim().substring(0, 100),
+    price: Math.max(0, typeof product.price === 'number' && !isNaN(product.price) ? product.price : (parseFloat(String(product.price)) || 999)),
+    imageUrl: String(product.imageUrl || 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&q=80&w=800').substring(0, 3000),
+    inStock: product.inStock !== false,
+    createdAt: product.createdAt ? String(product.createdAt).substring(0, 64) : new Date().toISOString()
+  };
+
+  if (product.description) {
+    clean.description = String(product.description).substring(0, 4000);
+  }
+  if (product.fabricDetails) {
+    clean.fabricDetails = String(product.fabricDetails).substring(0, 500);
+  }
+  if (product.originalPrice !== undefined && product.originalPrice !== null && !isNaN(Number(product.originalPrice))) {
+    clean.originalPrice = Number(product.originalPrice);
+  }
+  if (product.stockCount !== undefined && product.stockCount !== null && !isNaN(Number(product.stockCount))) {
+    clean.stockCount = Number(product.stockCount);
+  }
+  if (product.featured !== undefined) {
+    clean.featured = Boolean(product.featured);
+  }
+  if (product.isNewArrival !== undefined) {
+    clean.isNewArrival = Boolean(product.isNewArrival);
+  }
+  if (Array.isArray(product.sizes) && product.sizes.length > 0) {
+    clean.sizes = product.sizes.slice(0, 20).map(s => String(s));
+  } else {
+    clean.sizes = ['Free Size'];
+  }
+  if (Array.isArray(product.images) && product.images.length > 0) {
+    clean.images = product.images.slice(0, 10).map(img => String(img).substring(0, 3000));
+  }
+  if (product.sizeStock && typeof product.sizeStock === 'object') {
+    const safeSizeStock: Record<string, number> = {};
+    for (const [k, v] of Object.entries(product.sizeStock)) {
+      if (typeof v === 'number' && !isNaN(v)) {
+        safeSizeStock[k] = v;
+      }
+    }
+    clean.sizeStock = safeSizeStock;
+  }
+
+  return clean;
+}
+
+function docToProduct(data: any): Product {
+  const sizes = Array.isArray(data.sizes) && data.sizes.length > 0 
+    ? (data.sizes as Product['sizes']) 
+    : ['Free Size' as const];
+
+  return {
+    id: String(data.id || ''),
+    title: String(data.title || ''),
+    category: (data.category || 'Traditional Sarees') as Product['category'],
+    price: typeof data.price === 'number' ? data.price : (parseFloat(String(data.price)) || 0),
+    originalPrice: data.originalPrice !== undefined && data.originalPrice !== null ? Number(data.originalPrice) : undefined,
+    sizes,
+    stockCount: data.stockCount !== undefined && data.stockCount !== null ? Number(data.stockCount) : undefined,
+    sizeStock: data.sizeStock || {},
+    description: data.description || '',
+    fabricDetails: data.fabricDetails || undefined,
+    imageUrl: data.imageUrl || '',
+    images: Array.isArray(data.images) ? data.images : undefined,
+    inStock: data.inStock !== false,
+    featured: Boolean(data.featured),
+    isNewArrival: Boolean(data.isNewArrival),
+    createdAt: data.createdAt || new Date().toISOString()
+  };
+}
+
 export const ProductStorage = {
   // Synchronous getter for fast initial render
   getProducts(): Product[] {
@@ -348,7 +435,6 @@ export const ProductStorage = {
       if (memoryProductsCache === null) {
         memoryProductsCache = [];
       }
-      // Only persist to IndexedDB if there are items, never wipe with empty array
       if (memoryProductsCache.length > 0) {
         persistToIndexedDB(memoryProductsCache);
       }
@@ -356,12 +442,57 @@ export const ProductStorage = {
     return memoryProductsCache;
   },
 
-  // Asynchronous loader from Backend Server, Google Sheets, IndexedDB & LocalStorage
+  // Real-time listener for Firestore collection "products" across ALL users, devices, and browsers
+  subscribeToFirestore(callback: (products: Product[]) => void): Unsubscribe {
+    const pathForOnSnapshot = 'products';
+    return onSnapshot(
+      collection(db, pathForOnSnapshot),
+      (snapshot) => {
+        const firestoreProducts: Product[] = [];
+        snapshot.forEach(docSnap => {
+          const item = docToProduct(docSnap.data());
+          if (item && item.id && !ProductStorage.isDeleted(item.id)) {
+            firestoreProducts.push(item);
+          }
+        });
+        if (firestoreProducts.length > 0) {
+          const merged = this.mergeWithCloudProducts(firestoreProducts);
+          callback(merged);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, pathForOnSnapshot);
+      }
+    );
+  },
+
+  // Asynchronous loader from Firestore Cloud Database, Backend Server, Google Sheets, & IndexedDB
   async loadProductsAsync(): Promise<Product[]> {
-    // 1. Initialize shared Google Sheet ID from backend server config
+    // 1. Initialize shared Google Sheet ID
     await GoogleSheetsService.initSharedConfig().catch(() => {});
 
-    // 2. Fetch products from Backend Server storage (persisted on disk, available on ALL systems & devices)
+    // 2. Fetch directly from Firebase Firestore Cloud Database (Universal persistence across ALL devices and systems!)
+    try {
+      const snap = await getDocs(collection(db, 'products'));
+      if (!snap.empty) {
+        const firestoreProducts: Product[] = [];
+        snap.forEach(docSnap => {
+          const item = docToProduct(docSnap.data());
+          if (item && item.id && !ProductStorage.isDeleted(item.id)) {
+            firestoreProducts.push(item);
+          }
+        });
+
+        if (firestoreProducts.length > 0) {
+          const merged = this.mergeWithCloudProducts(firestoreProducts);
+          return merged;
+        }
+      }
+    } catch (err) {
+      console.warn('Firestore products fetch notice (will fallback to cache/server):', err);
+    }
+
+    // 3. Fetch products from Backend Server storage if available
     try {
       const serverRes = await fetch('/api/products');
       if (serverRes.ok) {
@@ -375,18 +506,12 @@ export const ProductStorage = {
       console.warn('Backend server products fetch warning:', e);
     }
 
-    // 3. If Google Sheets is configured, load products from Google Sheet and merge
+    // 4. If Google Sheets is configured, load products from Google Sheet and merge
     if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured()) {
       try {
         const gsRes = await GoogleSheetsService.fetchProductsFromSheet();
         if (gsRes.success && gsRes.products && gsRes.products.length > 0) {
           const merged = this.mergeWithCloudProducts(gsRes.products);
-          // Sync pulled products to backend server as well
-          fetch('/api/products/replace-all', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ products: merged })
-          }).catch(() => {});
           return merged;
         }
       } catch (err) {
@@ -394,10 +519,10 @@ export const ProductStorage = {
       }
     }
 
-    // 4. Fallback to IndexedDB
+    // 5. Fallback to IndexedDB
     try {
-      const db = await openIndexedDB();
-      const tx = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
+      const dbInstance = await openIndexedDB();
+      const tx = dbInstance.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
       const store = tx.objectStore(IDB_CONFIG.STORE_NAME);
       const items = await new Promise<Product[]>((resolve, reject) => {
         const req = store.getAll();
@@ -441,7 +566,7 @@ export const ProductStorage = {
 
     const map = new Map<string, Product>();
 
-    // 1. Put local custom items FIRST so they take absolute precedence and are never lost on refresh
+    // 1. Put local custom items FIRST so they take absolute precedence
     customItems.forEach(p => {
       map.set(p.id, p);
     });
@@ -455,8 +580,6 @@ export const ProductStorage = {
 
     const merged = Array.from(map.values());
     this.saveProducts(merged);
-
-
     return merged;
   },
 
@@ -503,7 +626,13 @@ export const ProductStorage = {
     const updated = [createdProduct, ...currentProducts.filter(p => p.id !== createdProduct.id)];
     this.saveProducts(updated);
 
-    // Save to Backend server so product is instantly visible across all systems and page refreshes
+    // Save to Firebase Firestore Cloud Database for permanent universal access
+    const cleanDoc = cleanProductForFirestore(createdProduct);
+    setDoc(doc(db, 'products', createdProduct.id), cleanDoc).catch(err => {
+      console.warn('Firestore product write error:', err);
+    });
+
+    // Save to Backend server cache
     fetch('/api/products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -566,7 +695,24 @@ export const ProductStorage = {
     const updated = [...createdList, ...currentProducts.filter(p => !createdList.some(c => c.id === p.id))];
     this.saveProducts(updated);
 
-    // Save to Backend server so bulk products are instantly visible across all systems and page refreshes
+    // Save all items to Firebase Firestore in batches of up to 300
+    (async () => {
+      try {
+        for (let i = 0; i < createdList.length; i += 300) {
+          const chunk = createdList.slice(i, i + 300);
+          const batch = writeBatch(db);
+          chunk.forEach(p => {
+            const clean = cleanProductForFirestore(p);
+            batch.set(doc(db, 'products', p.id), clean);
+          });
+          await batch.commit();
+        }
+      } catch (err) {
+        console.warn('Firestore bulk batch write warning:', err);
+      }
+    })();
+
+    // Save to Backend server
     fetch('/api/products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -575,7 +721,7 @@ export const ProductStorage = {
       console.warn('Backend server bulk products save error:', err);
     });
 
-    // Auto-sync all bulk items (from Excel / CSV / Multi-layer) to connected Google Sheet
+    // Auto-sync all bulk items to connected Google Sheet
     if (typeof window !== 'undefined' && GoogleSheetsService.isConfigured() && GoogleSheetsService.getAutoSyncEnabled()) {
       GoogleSheetsService.appendProducts(createdList).catch(err => {
         console.warn('Auto-sync bulk products to Google Sheets failed:', err);
@@ -598,13 +744,18 @@ export const ProductStorage = {
     if (isCustom) {
       saveStoredCustomProducts(customItems.map(p => p.id === updatedProduct.id ? updatedProduct : p));
     } else {
-      // Record modification in custom edits store
       const customEdits = getStoredCustomEdits();
       customEdits[updatedProduct.id] = updatedProduct;
       saveStoredCustomEdits(customEdits);
     }
 
     this.saveProducts(updated);
+
+    // Update in Firestore
+    const cleanDoc = cleanProductForFirestore(updatedProduct);
+    setDoc(doc(db, 'products', updatedProduct.id), cleanDoc, { merge: true }).catch(err => {
+      console.warn('Firestore update error:', err);
+    });
 
     // Sync update to backend server
     fetch(`/api/products/${updatedProduct.id}`, {
@@ -637,13 +788,18 @@ export const ProductStorage = {
     delete customEdits[id];
     saveStoredCustomEdits(customEdits);
 
-    // Add to deleted IDs list so it never reappears on future website code updates
+    // Add to deleted IDs list
     const deletedIds = getStoredDeletedIds();
     if (!deletedIds.includes(id)) {
       saveStoredDeletedIds([...deletedIds, id]);
     }
 
     this.saveProducts(updated);
+
+    // Delete from Firestore
+    deleteDoc(doc(db, 'products', id)).catch(err => {
+      console.warn('Firestore delete error:', err);
+    });
 
     // Sync deletion to backend server
     fetch(`/api/products/${id}`, {
@@ -660,7 +816,6 @@ export const ProductStorage = {
   },
 
   resetToDefault(): Product[] {
-    // Clear custom modifications
     saveStoredCustomProducts([]);
     saveStoredCustomEdits({});
     saveStoredDeletedIds([]);
@@ -679,6 +834,20 @@ export const ProductStorage = {
     saveStoredCustomProducts([]);
     saveStoredCustomEdits({});
     this.saveProducts([]);
+
+    // Delete all products from Firestore in batch
+    try {
+      const snap = await getDocs(collection(db, 'products'));
+      if (!snap.empty) {
+        const batch = writeBatch(db);
+        snap.forEach(docSnap => {
+          batch.delete(docSnap.ref);
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      console.warn('Firestore batch delete warning:', err);
+    }
 
     fetch('/api/products/clear', { method: 'POST' }).catch(() => {});
   },
@@ -926,6 +1095,11 @@ export const InquiryStorage = {
       };
       const updated = [newLog, ...existing].slice(0, 100); // keep last 100
       localStorage.setItem(KEYS.INQUIRIES, JSON.stringify(updated));
+
+      // Persist to Firestore inquiries collection
+      setDoc(doc(db, 'inquiries', newLog.id), newLog).catch(err => {
+        console.warn('Inquiry log firestore write warning:', err);
+      });
     } catch (e) {
       console.error('Failed to log inquiry:', e);
     }

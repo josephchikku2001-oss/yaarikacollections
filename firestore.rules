@@ -1,0 +1,87 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Product validation
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'title', 'category', 'price', 'imageUrl', 'inStock']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+        data.category is string && data.category.size() <= 100 &&
+        data.price is number && data.price >= 0 &&
+        data.imageUrl is string && data.imageUrl.size() <= 3000 &&
+        data.inStock is bool &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 4000)) &&
+        (!('fabricDetails' in data) || (data.fabricDetails is string && data.fabricDetails.size() <= 500)) &&
+        (!('originalPrice' in data) || (data.originalPrice is number)) &&
+        (!('stockCount' in data) || (data.stockCount is number)) &&
+        (!('featured' in data) || (data.featured is bool)) &&
+        (!('isNewArrival' in data) || (data.isNewArrival is bool)) &&
+        (!('sizes' in data) || (data.sizes is list && data.sizes.size() <= 20)) &&
+        (!('images' in data) || (data.images is list && data.images.size() <= 10)) &&
+        (!('sizeStock' in data) || (data.sizeStock is map)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    // Inquiry validation
+    function isValidInquiry(data) {
+      return data.keys().hasAll(['id', 'productId', 'productTitle']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.productId is string && data.productId.size() <= 128 &&
+        data.productTitle is string && data.productTitle.size() <= 200 &&
+        (!('selectedSize' in data) || (data.selectedSize is string && data.selectedSize.size() <= 50)) &&
+        (!('phoneContact' in data) || (data.phoneContact is string && data.phoneContact.size() <= 30)) &&
+        (!('timestamp' in data) || (data.timestamp is string && data.timestamp.size() <= 64));
+    }
+
+    // Store settings validation
+    function isValidSetting(data) {
+      return data.keys().hasAll(['id', 'key']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.key is string && data.key.size() <= 128 &&
+        (!('value' in data) || (data.value is string && data.value.size() <= 4000)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Products catalog
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if isValidId(productId) && isValidProduct(incoming());
+      allow update: if isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isValidId(productId);
+    }
+
+    // Inquiries log
+    match /inquiries/{inquiryId} {
+      allow read: if true;
+      allow create: if isValidId(inquiryId) && isValidInquiry(incoming());
+      allow update, delete: if false;
+    }
+
+    // Store settings
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isValidId(settingId) && isValidSetting(incoming());
+      allow delete: if isValidId(settingId);
+    }
+  }
+}

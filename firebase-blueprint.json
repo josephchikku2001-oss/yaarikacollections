@@ -1,0 +1,147 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A boutique catalog product item",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Unique product ID"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Name of the product"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Category name"
+        },
+        "price": {
+          "type": "number",
+          "description": "Selling price in INR"
+        },
+        "originalPrice": {
+          "type": "number",
+          "description": "Original MRP price in INR"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Product description and fabric highlights"
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 3000,
+          "description": "Primary product image URL"
+        },
+        "fabricDetails": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Details about fabric and material"
+        },
+        "inStock": {
+          "type": "boolean",
+          "description": "Availability flag"
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Featured on home showcase flag"
+        },
+        "isNewArrival": {
+          "type": "boolean",
+          "description": "New arrivals tag"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of creation"
+        }
+      },
+      "required": ["id", "title", "category", "price", "imageUrl", "inStock"]
+    },
+    "Inquiry": {
+      "title": "Inquiry",
+      "description": "Customer WhatsApp order inquiry log",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Inquiry identifier"
+        },
+        "productId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Referenced product ID"
+        },
+        "productTitle": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Title of the inquired product"
+        },
+        "selectedSize": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Selected size"
+        },
+        "phoneContact": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Customer or store contact number"
+        },
+        "timestamp": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of inquiry"
+        }
+      },
+      "required": ["id", "productId", "productTitle"]
+    },
+    "StoreSetting": {
+      "title": "StoreSetting",
+      "description": "Global store settings and integrations config",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Setting key identifier"
+        },
+        "key": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Setting parameter name"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Configuration value or JSON payload"
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Timestamp of update"
+        }
+      },
+      "required": ["id", "key"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Boutique catalog collection available for public viewing and admin updates"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": "Inquiry",
+      "description": "Customer inquiry logs from WhatsApp purchase interactions"
+    },
+    "/settings/{settingId}": {
+      "schema": "StoreSetting",
+      "description": "Shared boutique configurations such as Google Sheet link"
+    }
+  }
+}

@@ -1,17 +1,11 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
-  getAuth, 
   signInWithPopup, 
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
   User 
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
-
-// Reuse existing Firebase app instance if already initialized
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+import { auth } from './firebase';
 
 const provider = new GoogleAuthProvider();
 // Google Sheets scope
