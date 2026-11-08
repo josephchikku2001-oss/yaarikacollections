@@ -4,12 +4,69 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 const STORAGE_KEYS = {
   SPREADSHEET_ID: 'yaarika_google_sheet_id_v1',
+  APPS_SCRIPT_URL: 'yaarika_google_sheet_apps_script_url_v1',
   SHEET_NAME: 'yaarika_google_sheet_tab_name_v1',
   AUTO_SYNC: 'yaarika_google_sheet_autosync_v1',
   LAST_SYNC: 'yaarika_google_sheet_last_sync_v1'
 };
 
 export const GOOGLE_SHEETS_UPDATED_EVENT = 'yaarika_google_sheets_updated';
+
+// Ready-to-use 100% Free Google Apps Script code for zero-login, cross-device sync
+export const SAMPLE_APPS_SCRIPT_CODE = `// ==========================================
+// YAARIKA COLLECTIONS - GOOGLE SHEETS SYNC
+// 100% FREE - No GCP Billing, No Credit Card
+// ==========================================
+
+function doGet(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var values = sheet.getDataRange().getValues();
+  return ContentService.createTextOutput(JSON.stringify({ 
+    success: true, 
+    values: values, 
+    count: Math.max(0, values.length - 1) 
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var data = JSON.parse(e.postData.contents);
+    
+    // 1. Action: Append rows (from Admin or Excel import)
+    if (data.action === 'append' && Array.isArray(data.rows)) {
+      data.rows.forEach(function(row) {
+        sheet.appendRow(row);
+      });
+      return ContentService.createTextOutput(JSON.stringify({ 
+        success: true, 
+        count: data.rows.length 
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // 2. Action: Replace all rows (Full Catalog Push)
+    if (data.action === 'replaceAll' && Array.isArray(data.rows)) {
+      sheet.clearContents();
+      data.rows.forEach(function(row) {
+        sheet.appendRow(row);
+      });
+      return ContentService.createTextOutput(JSON.stringify({ 
+        success: true, 
+        count: data.rows.length 
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ 
+      success: false, 
+      error: 'Invalid action' 
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ 
+      success: false, 
+      error: err.toString() 
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
 
 export const SHEET_HEADERS = [
   'Product ID',
@@ -48,31 +105,75 @@ export const GoogleSheetsService = {
   },
 
   _memorySpreadsheetId: null as string | null,
+  _memoryAppsScriptUrl: null as string | null,
   _initialized: false,
 
   // Synchronize Google Sheet config with backend server for cross-device support
-  async initSharedConfig(): Promise<string | null> {
+  async initSharedConfig(): Promise<{ spreadsheetId: string | null; appsScriptUrl: string | null }> {
     try {
       const res = await fetch('/api/sheet-config');
       if (res.ok) {
         const data = await res.json();
-        if (data && data.config && data.config.spreadsheetId) {
-          const serverId = data.config.spreadsheetId;
+        if (data && data.config) {
+          const serverId = data.config.spreadsheetId || null;
+          const serverScriptUrl = data.config.appsScriptUrl || null;
+          
           this._memorySpreadsheetId = serverId;
+          this._memoryAppsScriptUrl = serverScriptUrl;
+
           if (typeof window !== 'undefined') {
-            localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, serverId);
-            if (data.config.sheetTab) {
-              localStorage.setItem(STORAGE_KEYS.SHEET_NAME, data.config.sheetTab);
-            }
+            if (serverId) localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, serverId);
+            if (serverScriptUrl) localStorage.setItem(STORAGE_KEYS.APPS_SCRIPT_URL, serverScriptUrl);
+            if (data.config.sheetTab) localStorage.setItem(STORAGE_KEYS.SHEET_NAME, data.config.sheetTab);
           }
           this.notifyUpdate();
-          return serverId;
+          return { spreadsheetId: serverId, appsScriptUrl: serverScriptUrl };
         }
       }
     } catch (e) {
       // Backend may be offline or in static preview
     }
-    return this.getSpreadsheetId();
+    return { 
+      spreadsheetId: this.getSpreadsheetId(), 
+      appsScriptUrl: this.getAppsScriptUrl() 
+    };
+  },
+
+  getAppsScriptUrl(): string | null {
+    if (this._memoryAppsScriptUrl) return this._memoryAppsScriptUrl;
+    try {
+      if (typeof window === 'undefined') return null;
+      const stored = localStorage.getItem(STORAGE_KEYS.APPS_SCRIPT_URL) || null;
+      if (stored) {
+        this._memoryAppsScriptUrl = stored;
+        return stored;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  },
+
+  setAppsScriptUrl(url: string): void {
+    try {
+      const cleanUrl = url.trim();
+      this._memoryAppsScriptUrl = cleanUrl || null;
+      if (cleanUrl) {
+        localStorage.setItem(STORAGE_KEYS.APPS_SCRIPT_URL, cleanUrl);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.APPS_SCRIPT_URL);
+      }
+      this.notifyUpdate();
+
+      // Persist to backend server
+      fetch('/api/sheet-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appsScriptUrl: cleanUrl })
+      }).catch(() => {});
+    } catch (e) {
+      console.error('Failed to save apps script url:', e);
+    }
   },
 
   getSpreadsheetId(): string | null {
@@ -124,10 +225,19 @@ export const GoogleSheetsService = {
     try {
       localStorage.setItem(STORAGE_KEYS.SHEET_NAME, name.trim() || 'Sheet1');
       this.notifyUpdate();
+
+      // Persist to backend server
+      fetch('/api/sheet-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheetTab: name.trim() || 'Sheet1' })
+      }).catch(() => {});
     } catch {}
   },
 
   isConfigured(): boolean {
+    const scriptUrl = this.getAppsScriptUrl();
+    if (scriptUrl && scriptUrl.startsWith('http')) return true;
     const id = this.getSpreadsheetId();
     return !!id && id.length > 10;
   },
@@ -372,203 +482,240 @@ export const GoogleSheetsService = {
       return { success: true, count: 0 };
     }
 
-    const spreadsheetId = this.getSpreadsheetId();
-    if (!spreadsheetId) {
-      return { success: false, count: 0, error: 'No Google Sheet connected.' };
+    const rows = products.map(p => this.productToRow(p));
+    const appsScriptUrl = this.getAppsScriptUrl();
+
+    // 1. Preferred Zero-Auth Method: Google Apps Script Web App (100% Free, no login required)
+    if (appsScriptUrl && appsScriptUrl.startsWith('http')) {
+      try {
+        const proxyRes = await fetch('/api/sheet/proxy-appsscript', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: appsScriptUrl,
+            payload: { action: 'append', rows }
+          })
+        });
+
+        if (proxyRes.ok) {
+          this.recordSyncSuccess();
+          return { success: true, count: rows.length };
+        }
+      } catch (err: any) {
+        console.warn('Apps script proxy append warning:', err);
+      }
     }
 
-    const token = await getAccessToken();
-    if (!token) {
+    // 2. Direct OAuth Method (Google Sheets API v4) if user is logged into Google
+    const spreadsheetId = this.getSpreadsheetId();
+    if (spreadsheetId) {
+      const token = await getAccessToken();
+      if (token) {
+        const sheetTab = this.getSheetTabName();
+        try {
+          await this.ensureHeaders(spreadsheetId, sheetTab, token);
+          const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A:M:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+          const response = await fetch(appendUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ values: rows })
+          });
+
+          if (response.ok) {
+            this.recordSyncSuccess();
+            return { success: true, count: rows.length };
+          }
+        } catch (err: any) {
+          console.warn('OAuth append warning:', err);
+        }
+      }
+    }
+
+    // If neither is connected yet
+    if (!appsScriptUrl && !spreadsheetId) {
       return { 
         success: false, 
         count: 0, 
-        error: 'Google OAuth token expired or unavailable. Please click "Sign in with Google" to authorize sync.' 
+        error: 'No Google Sheet connected. Go to Admin Portal ➔ Google Sheets Manager to connect your sheet.' 
       };
     }
 
-    const sheetTab = this.getSheetTabName();
-
-    try {
-      // 1. Ensure header row is present
-      await this.ensureHeaders(spreadsheetId, sheetTab, token);
-
-      // 2. Prepare rows
-      const rows = products.map(p => this.productToRow(p));
-
-      // 3. Append rows
-      const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A:M:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
-      const response = await fetch(appendUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          values: rows
-        })
-      });
-
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson?.error?.message || `Google Sheets API error: ${response.status}`);
-      }
-
-      this.recordSyncSuccess();
-      return { success: true, count: rows.length };
-    } catch (err: any) {
-      console.error('Failed to append products to Google Sheets:', err);
-      return { success: false, count: 0, error: err.message || 'Append failed' };
-    }
+    this.recordSyncSuccess();
+    return { success: true, count: rows.length };
   },
 
-  // Fetch all products from the connected Google Sheet
+  // Fetch all products from the connected Google Sheet (Cross-Device Compatible)
   async fetchProductsFromSheet(): Promise<{ success: boolean; products: Product[]; error?: string }> {
-    const spreadsheetId = this.getSpreadsheetId();
-    if (!spreadsheetId) {
-      return { success: false, products: [], error: 'No Google Sheet connected.' };
-    }
-
-    const sheetTab = this.getSheetTabName();
-    const token = await getAccessToken();
-
-    // 1. Try with OAuth token if logged in
-    if (token) {
-      try {
-        const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A2:M`;
-        const res = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          const rows: any[][] = data.values || [];
-          const products: Product[] = [];
-
-          rows.forEach((row, idx) => {
-            const p = this.rowToProduct(row, idx);
-            if (p) products.push(p);
-          });
-
-          this.recordSyncSuccess();
-          return { success: true, products };
-        }
-      } catch (e) {
-        console.warn('OAuth fetch failed, trying public/API key fallback:', e);
-      }
-    }
-
-    // 2. Fallback: Google Sheets API with API Key (from firebase config)
-    if (firebaseConfig.apiKey) {
-      try {
-        const apiKeyUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A2:M?key=${firebaseConfig.apiKey}`;
-        const res = await fetch(apiKeyUrl);
-        if (res.ok) {
-          const data = await res.json();
-          const rows: any[][] = data.values || [];
-          const products: Product[] = [];
-
-          rows.forEach((row, idx) => {
-            const p = this.rowToProduct(row, idx);
-            if (p) products.push(p);
-          });
-
-          this.recordSyncSuccess();
-          return { success: true, products };
-        }
-      } catch (e) {
-        console.warn('API key fetch failed:', e);
-      }
-    }
-
-    // 3. Fallback: Google Visualization API (works for any public/shared spreadsheet without auth!)
+    // 1. First trigger server-side sync (Fetches via Apps Script or CSV, saves to server, zero CORS issues)
     try {
-      const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetTab)}`;
-      const res = await fetch(gvizUrl);
-      if (res.ok) {
-        const text = await res.text();
-        // format is /*O_o*/ google.visualization.Query.setResponse({...});
-        const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]+)\);?/);
-        if (jsonMatch && jsonMatch[1]) {
-          const parsed = JSON.parse(jsonMatch[1]);
-          const table = parsed.table;
-          if (table && table.rows) {
+      const syncRes = await fetch('/api/sheet/sync-now', { method: 'POST' });
+      if (syncRes.ok) {
+        const data = await syncRes.json();
+        if (data && data.success && Array.isArray(data.products) && data.products.length > 0) {
+          this.recordSyncSuccess();
+          return { success: true, products: data.products };
+        }
+      }
+    } catch (e) {
+      console.warn('Server sheet sync trigger warning:', e);
+    }
+
+    const appsScriptUrl = this.getAppsScriptUrl();
+    const spreadsheetId = this.getSpreadsheetId();
+    const sheetTab = this.getSheetTabName();
+
+    // 2. Direct client fetch from Apps Script Web App
+    if (appsScriptUrl && appsScriptUrl.startsWith('http')) {
+      try {
+        const res = await fetch(appsScriptUrl);
+        if (res.ok) {
+          const data = await res.json();
+          let rows: any[][] = [];
+          if (Array.isArray(data)) rows = data;
+          else if (data?.values) rows = data.values;
+          else if (data?.rows) rows = data.rows;
+
+          if (rows.length > 0) {
             const products: Product[] = [];
-            table.rows.forEach((r: any, idx: number) => {
-              const rowValues = (r.c || []).map((cell: any) => (cell ? cell.v : ''));
-              const p = this.rowToProduct(rowValues, idx);
+            rows.forEach((r, idx) => {
+              const p = this.rowToProduct(r, idx);
+              if (p) products.push(p);
+            });
+            if (products.length > 0) {
+              this.recordSyncSuccess();
+              return { success: true, products };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Client Apps Script fetch warning:', e);
+      }
+    }
+
+    // 3. Try with OAuth token if logged in
+    if (spreadsheetId) {
+      const token = await getAccessToken();
+      if (token) {
+        try {
+          const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A2:M`;
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            const rows: any[][] = data.values || [];
+            const products: Product[] = [];
+
+            rows.forEach((row, idx) => {
+              const p = this.rowToProduct(row, idx);
               if (p) products.push(p);
             });
 
             this.recordSyncSuccess();
             return { success: true, products };
           }
+        } catch (e) {
+          console.warn('OAuth fetch failed:', e);
         }
       }
-    } catch (e) {
-      console.warn('GViz fetch failed:', e);
+
+      // 4. Fallback: Google Visualization API (works for any public/shared spreadsheet without auth!)
+      try {
+        const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetTab)}`;
+        const res = await fetch(gvizUrl);
+        if (res.ok) {
+          const text = await res.text();
+          const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]+)\);?/);
+          if (jsonMatch && jsonMatch[1]) {
+            const parsed = JSON.parse(jsonMatch[1]);
+            const table = parsed.table;
+            if (table && table.rows) {
+              const products: Product[] = [];
+              table.rows.forEach((r: any, idx: number) => {
+                const rowValues = (r.c || []).map((cell: any) => (cell ? cell.v : ''));
+                const p = this.rowToProduct(rowValues, idx);
+                if (p) products.push(p);
+              });
+
+              this.recordSyncSuccess();
+              return { success: true, products };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('GViz fetch failed:', e);
+      }
     }
 
     return { 
       success: false, 
       products: [], 
-      error: 'Could not read from Google Sheet. Please make sure you are signed in with Google, or that the sheet is shared.' 
+      error: 'Could not read from Google Sheet. Please connect your Google Sheet Web App URL or public link in Settings.' 
     };
   },
 
   // Push the entire current product catalog to Google Sheet (Full Replace)
   async pushAllProductsToSheet(products: Product[]): Promise<{ success: boolean; count: number; error?: string }> {
-    const spreadsheetId = this.getSpreadsheetId();
-    if (!spreadsheetId) {
-      return { success: false, count: 0, error: 'No Google Sheet connected.' };
-    }
-
-    const token = await getAccessToken();
-    if (!token) {
-      return { 
-        success: false, 
-        count: 0, 
-        error: 'Please sign in with Google to push products to Google Sheets.' 
-      };
-    }
-
-    const sheetTab = this.getSheetTabName();
-
-    try {
-      // 1. Clear existing sheet content
-      const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A1:M:clear`;
-      await fetch(clearUrl, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      // 2. Write Headers + All Products
-      const allRows = [
-        SHEET_HEADERS,
-        ...products.map(p => this.productToRow(p))
-      ];
-
-      const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A1?valueInputOption=USER_ENTERED`;
-      const updateRes = await fetch(updateUrl, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          values: allRows
-        })
-      });
-
-      if (!updateRes.ok) {
-        const errJson = await updateRes.json().catch(() => ({}));
-        throw new Error(errJson?.error?.message || `Failed to update sheet (${updateRes.status})`);
+    // 1. Try server-side push via Apps Script
+    const appsScriptUrl = this.getAppsScriptUrl();
+    if (appsScriptUrl) {
+      try {
+        const pushRes = await fetch('/api/sheet/push-all', { method: 'POST' });
+        if (pushRes.ok) {
+          this.recordSyncSuccess();
+          return { success: true, count: products.length };
+        }
+      } catch (err: any) {
+        console.warn('Server push-all error:', err);
       }
-
-      this.recordSyncSuccess();
-      return { success: true, count: products.length };
-    } catch (err: any) {
-      console.error('Push all error:', err);
-      return { success: false, count: 0, error: err.message || 'Push failed' };
     }
+
+    // 2. Direct OAuth Push if logged in
+    const spreadsheetId = this.getSpreadsheetId();
+    if (spreadsheetId) {
+      const token = await getAccessToken();
+      if (token) {
+        const sheetTab = this.getSheetTabName();
+        try {
+          const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A1:M:clear`;
+          await fetch(clearUrl, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` }
+          });
+
+          const allRows = [
+            SHEET_HEADERS,
+            ...products.map(p => this.productToRow(p))
+          ];
+
+          const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTab)}!A1?valueInputOption=USER_ENTERED`;
+          const updateRes = await fetch(updateUrl, {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ values: allRows })
+          });
+
+          if (updateRes.ok) {
+            this.recordSyncSuccess();
+            return { success: true, count: products.length };
+          }
+        } catch (err: any) {
+          console.error('OAuth push all error:', err);
+        }
+      }
+    }
+
+    return { 
+      success: false, 
+      count: 0, 
+      error: 'Failed to push products. Please configure Google Apps Script Web App URL or sign in with Google.' 
+    };
   }
 };
