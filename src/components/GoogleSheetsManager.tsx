@@ -22,7 +22,8 @@ import {
   Info,
   Code2,
   Zap,
-  CheckCheck
+  CheckCheck,
+  X
 } from 'lucide-react';
 import { Product } from '../types';
 import { 
@@ -39,6 +40,7 @@ import {
 } from '../services/googleAuth';
 import { User } from 'firebase/auth';
 import { ProductStorage } from '../services/storage';
+import firebaseConfig from '../../firebase-applet-config.json';
 
 interface GoogleSheetsManagerProps {
   products: Product[];
@@ -62,14 +64,15 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
   const [lastSync, setLastSync] = useState<string | null>(() => GoogleSheetsService.getLastSyncedTime());
   
   // Loading & Feedback
+  const [isCreatingSheet, setIsCreatingSheet] = useState<boolean>(false);
   const [isPulling, setIsPulling] = useState<boolean>(false);
   const [isPushing, setIsPushing] = useState<boolean>(false);
   const [isSavingConfig, setIsSavingConfig] = useState<boolean>(false);
   const [sheetStatusMessage, setSheetStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
-  // Script Copy State
+  // Script Modal State (shows when clicking 1-Click Copy Script Code)
   const [copiedScript, setCopiedScript] = useState<boolean>(false);
-  const [showScriptCode, setShowScriptCode] = useState<boolean>(false);
+  const [showScriptModal, setShowScriptModal] = useState<boolean>(false);
 
   // Confirmation Modals
   const [showPullConfirm, setShowPullConfirm] = useState<boolean>(false);
@@ -108,11 +111,106 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
   const currentSheetId = GoogleSheetsService.getSpreadsheetId();
   const currentAppsScriptUrl = GoogleSheetsService.getAppsScriptUrl();
 
+  // Handle 1-Click Copy Script Code with interactive visual modal popup
   const handleCopyScript = () => {
     navigator.clipboard.writeText(SAMPLE_APPS_SCRIPT_CODE);
     setCopiedScript(true);
+    setShowScriptModal(true);
     onToast('Google Apps Script code copied to clipboard!');
     setTimeout(() => setCopiedScript(false), 3000);
+  };
+
+  // 1-Click: Create New Google Sheet in Drive
+  const handleCreateNewSheet = async () => {
+    setIsCreatingSheet(true);
+    setSheetStatusMessage(null);
+
+    // If user is already signed in with Google, use Google Sheets API directly
+    if (googleUser) {
+      try {
+        const result = await GoogleSheetsService.createNewSpreadsheet('Yaarika Collections - Product Catalog');
+        if (result.success && result.spreadsheetId) {
+          setSpreadsheetIdInput(result.spreadsheetId);
+          setSheetStatusMessage({
+            type: 'success',
+            text: 'Created "Yaarika Collections - Product Catalog" spreadsheet in your Google Drive!'
+          });
+          onToast('New Google Sheet created and linked!');
+
+          // If products exist, push them
+          if (products.length > 0) {
+            GoogleSheetsService.pushAllProductsToSheet(products).then(pushRes => {
+              if (pushRes.success) {
+                onToast(`Populated Google Sheet with ${pushRes.count} products!`);
+              }
+            });
+          }
+          setIsCreatingSheet(false);
+          return;
+        }
+      } catch (err: any) {
+        console.warn('Direct API create error, using 1-click fallback:', err);
+      }
+    }
+
+    // Zero-Auth 1-Click Fallback: Open Google Sheets directly without requiring sign-in or domain permissions
+    try {
+      // Copy standard header row to clipboard so user can just paste into row 1
+      const headerRow = SHEET_HEADERS.join('\t');
+      navigator.clipboard.writeText(headerRow).catch(() => {});
+
+      // Open new Google Sheet in browser
+      window.open('https://sheets.new', '_blank');
+
+      onToast('Opening new Google Sheet in Google Drive... Row 1 headers copied to clipboard!');
+      setSheetStatusMessage({
+        type: 'info',
+        text: 'പുതിയ Google Sheet തുറന്നു! മുകളിലെ വരിയിൽ (Row 1) പേസ്റ്റ് ചെയ്യുക, ശേഷം ലിങ്ക് താഴെയുള്ള ബോക്സിൽ നൽകുക.'
+      });
+    } catch (e) {
+      window.open('https://docs.google.com/spreadsheets/u/0/create', '_blank');
+    } finally {
+      setIsCreatingSheet(false);
+    }
+  };
+
+  // Google Sign-In handler with clear error messaging
+  const handleGoogleSignIn = async () => {
+    setIsSigningIn(true);
+    setSheetStatusMessage(null);
+    try {
+      const res = await googleSignIn();
+      if (res?.user) {
+        setGoogleUser(res.user);
+        onToast(`Signed in as ${res.user.displayName || res.user.email}`);
+      }
+    } catch (err: any) {
+      console.error('Google Sign In error:', err);
+      const errMsg = String(err?.message || '');
+      const errCode = String(err?.code || '');
+      const isUnauthorizedDomain = errCode === 'auth/unauthorized-domain' || errMsg.includes('auth/unauthorized-domain');
+      const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'your-app.vercel.app';
+
+      if (isUnauthorizedDomain) {
+        setSheetStatusMessage({
+          type: 'error',
+          text: `Firebase auth/unauthorized-domain: "${currentHost}" Firebase-ൽ അംഗീകരിച്ചിട്ടില്ല. ലോഗിൻ ആവശ്യമില്ലാതെ തന്നെ പ്രവർത്തിക്കാൻ "1-Click Copy Script Code" അല്ലെങ്കിൽ "1-Click Create Google Sheet" ഉപയോഗിക്കുക!`
+        });
+      } else {
+        setSheetStatusMessage({
+          type: 'error',
+          text: `Sign-in failed: ${errMsg || 'Could not connect with Google'}`
+        });
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    await logoutGoogle();
+    setGoogleUser(null);
+    onToast('Signed out of Google account.');
   };
 
   // Save Settings
@@ -180,7 +278,6 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
         });
         onToast(`Successfully synced ${data.products.length} products from Google Sheet!`);
       } else {
-        // Fallback to client-side fetch
         const clientRes = await GoogleSheetsService.fetchProductsFromSheet();
         if (clientRes.success && clientRes.products.length > 0) {
           ProductStorage.mergeWithCloudProducts(clientRes.products);
@@ -303,160 +400,196 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
         </div>
       )}
 
-      {/* METHOD 1: RECOMMENDED GOOGLE APPS SCRIPT WEB APP (ZERO AUTH, NO UPGRADE, 100% FREE) */}
-      <div className="bg-white rounded-3xl border-2 border-emerald-500/30 p-5 sm:p-6 shadow-md space-y-5">
+      {/* 1-CLICK: CREATE NEW GOOGLE SHEET IN MY DRIVE (EXACTLY AS IN SCREENSHOT) */}
+      <div className="bg-white rounded-3xl border-2 border-emerald-500/40 p-5 sm:p-6 shadow-md space-y-4">
         
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
               <Zap className="w-5 h-5 text-emerald-700" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h4 className="font-bold text-sm sm:text-base text-gray-900 font-cinzel">
-                  മാർഗ്ഗം 1: Google Apps Script Web App (ഏറ്റവും എളുപ്പമുള്ള വഴി - 100% സൗജന്യം)
-                </h4>
-                <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300">
-                  Recommended
-                </span>
-              </div>
+              <h4 className="font-bold text-sm sm:text-base text-gray-900 font-cinzel">
+                1-Click Google Sheet Automation
+              </h4>
               <p className="text-xs text-gray-600 mt-0.5">
-                ഗൂഗിൾ ഷീറ്റിൽ ഒരു തവണ ഈ സ്ക്രിപ്റ്റ് ചേർത്താൽ, ലോഗിൻ ആവശ്യമില്ലാതെ തന്നെ ഏത് ഡിവൈസിൽ നിന്നും പ്രൊഡക്റ്റുകൾ സേവ് ചെയ്യാനും ഫെച്ച് ചെയ്യാനും സാധിക്കും.
+                ഒരു ക്ലിക്കിൽ ഗൂഗിൾ ഡ്രൈവിൽ പുതിയ കാറ്റലോഗ് ഷീറ്റ് നിർമ്മിക്കുകയോ കോഡ് കോപ്പി ചെയ്യുകയോ ചെയ്യാം.
               </p>
             </div>
           </div>
 
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* EXACT BUTTON FROM USER'S REQUEST */}
+            <button
+              type="button"
+              onClick={handleCopyScript}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer shrink-0"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>One-Click Copy Script Code</span>
+            </button>
+          </div>
+        </div>
+
+        {/* GREEN 1-CLICK CREATE SHEET BUTTON (MATCHING SCREENSHOT) */}
+        <div className="p-4 bg-emerald-50/60 border border-emerald-200 rounded-2xl space-y-2">
           <button
             type="button"
-            onClick={handleCopyScript}
-            className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer shrink-0"
+            onClick={handleCreateNewSheet}
+            disabled={isCreatingSheet}
+            className="w-full py-3.5 px-5 rounded-2xl bg-[#005a3c] hover:bg-[#004830] text-white font-extrabold text-xs uppercase tracking-wider shadow-md flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-60"
           >
-            {copiedScript ? <CheckCheck className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
-            <span>{copiedScript ? 'കോഡ് കോപ്പി ആയി!' : '1-Click Copy Script Code'}</span>
+            <Plus className={`w-4 h-4 text-emerald-300 ${isCreatingSheet ? 'animate-spin' : ''}`} />
+            <span>+ 1-CLICK: CREATE NEW GOOGLE SHEET IN MY DRIVE</span>
           </button>
+          <p className="text-[11px] text-gray-600 text-center font-medium">
+            Automatically creates a formatted "Yaarika Collections - Product Catalog" in your Google Drive with all 13 columns.
+          </p>
         </div>
 
-        {/* 4 Step Visual Quick Guide */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs text-gray-700">
-          <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-1">
-            <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs">
-              1
-            </div>
-            <strong className="block text-gray-900 text-xs font-bold">Open Apps Script</strong>
-            <p className="text-[11px] text-gray-600 leading-snug">
-              നിങ്ങളുടെ Google Sheet തുറക്കുക. മുകളിലെ മെനുവിൽ <strong>Extensions ➔ Apps Script</strong> ക്ലിക്ക് ചെയ്യുക.
-            </p>
-          </div>
+      </div>
 
-          <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-1">
-            <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs">
-              2
-            </div>
-            <strong className="block text-gray-900 text-xs font-bold">Paste &amp; Save</strong>
-            <p className="text-[11px] text-gray-600 leading-snug">
-              പഴയ കോഡ് മാറ്റി മുകളിലെ <strong>"Copy Script Code"</strong> ബട്ടൺ വഴി ലഭിച്ച കോഡ് പേസ്റ്റ് ചെയ്ത് <strong>Save (💾)</strong> ചെയ്യുക.
-            </p>
-          </div>
+      {/* MAIN TWO COLUMN GRID: GOOGLE AUTH & LINK SPREADSHEET */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-          <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-1">
-            <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs">
-              3
+        {/* Card 1: Google Account Authorization (Matching Screenshot) */}
+        <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between space-y-4">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h4 className="font-cinzel text-base font-bold text-[#4A0E17] flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                <span>Google Account Authorization</span>
+              </h4>
+              <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                googleUser ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
+              }`}>
+                {googleUser ? 'Authorized' : 'Not Signed In'}
+              </span>
             </div>
-            <strong className="block text-gray-900 text-xs font-bold">Deploy as Web App</strong>
-            <p className="text-[11px] text-gray-600 leading-snug">
-              <strong>Deploy ➔ New deployment ➔ Web app</strong> തിരഞ്ഞെടുക്കുക. Who has access എന്നത് <strong>"Anyone"</strong> നൽകി Deploy ക്ലിക്ക് ചെയ്യുക.
-            </p>
-          </div>
 
-          <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-1">
-            <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs">
-              4
-            </div>
-            <strong className="block text-gray-900 text-xs font-bold">Paste URL Below</strong>
-            <p className="text-[11px] text-gray-600 leading-snug">
-              ലഭിക്കുന്ന <strong>Web app URL</strong> താഴെയുള്ള ബോക്സിൽ നൽകി <strong>"Connect &amp; Sync"</strong> ക്ലിക്ക് ചെയ്യുക!
+            <p className="text-xs text-gray-600 leading-relaxed">
+              Sign in with your Google account to grant permission for reading and updating spreadsheets directly from this applet with zero backend server.
             </p>
+
+            {googleUser ? (
+              <div className="p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-2xl flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {googleUser.photoURL ? (
+                    <img 
+                      src={googleUser.photoURL} 
+                      alt={googleUser.displayName || 'Google User'} 
+                      className="w-10 h-10 rounded-full border border-emerald-300 shadow-xs object-cover shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-emerald-700 text-white flex items-center justify-center font-bold text-sm shrink-0">
+                      {(googleUser.displayName || googleUser.email || 'G')[0].toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-emerald-950 truncate">
+                      {googleUser.displayName || 'Connected Account'}
+                    </p>
+                    <p className="text-[11px] text-emerald-800/80 truncate">
+                      {googleUser.email}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleSignOut}
+                  className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold flex items-center gap-1 transition-colors shrink-0 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            ) : (
+              <div className="pt-2 flex flex-col items-center justify-center text-center p-4 bg-gray-50 border border-gray-200 rounded-2xl space-y-3">
+                <p className="text-xs text-gray-600">
+                  Click below to authorize Google Sheets API access:
+                </p>
+
+                <button 
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  disabled={isSigningIn}
+                  className="gsi-material-button shadow-sm hover:shadow-md transition-all cursor-pointer"
+                >
+                  <div className="gsi-material-button-state"></div>
+                  <div className="gsi-material-button-content-wrapper">
+                    <div className="gsi-material-button-icon">
+                      <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: 'block' }}>
+                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                        <path fill="none" d="M0 0h48v48H0z"></path>
+                      </svg>
+                    </div>
+                    <span className="gsi-material-button-contents font-semibold">
+                      {isSigningIn ? 'Connecting to Google...' : 'Sign in with Google'}
+                    </span>
+                  </div>
+                </button>
+
+                <p className="text-[11px] text-gray-500">
+                  കുറിപ്പ്: Vercel-ൽ ലോഗിൻ എറർ വരുന്നുണ്ടെങ്കിൽ മുകളിലുള്ള <strong>"One-Click Copy Script Code"</strong> ഉപയോഗിക്കാം. ലോഗിൻ ഇല്ലാതെ തന്നെ സേവ് ആകും!
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* View Code Accordion */}
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowScriptCode(prev => !prev)}
-            className="text-xs font-bold text-emerald-800 hover:text-emerald-950 flex items-center gap-1.5 cursor-pointer underline"
-          >
-            <Code2 className="w-4 h-4 text-emerald-700" />
-            <span>{showScriptCode ? 'Hide Apps Script Code' : 'സ്ക്രിപ്റ്റ് കോഡ് കാണുക (View Apps Script Code)'}</span>
-            {showScriptCode ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-
-          {showScriptCode && (
-            <div className="mt-2.5 p-3.5 bg-gray-900 text-emerald-300 font-mono text-[11px] rounded-2xl overflow-x-auto max-h-64 border border-gray-800 relative">
-              <button
-                type="button"
-                onClick={handleCopyScript}
-                className="absolute top-2 right-2 px-2.5 py-1 rounded bg-emerald-600 text-white text-[10px] font-bold hover:bg-emerald-500 cursor-pointer"
-              >
-                {copiedScript ? 'Copied!' : 'Copy'}
-              </button>
-              <pre className="whitespace-pre">{SAMPLE_APPS_SCRIPT_CODE}</pre>
+        {/* Card 2: Link Google Spreadsheet (Matching Screenshot) */}
+        <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm flex flex-col justify-between space-y-4">
+          <form onSubmit={handleSaveConfig} className="space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h4 className="font-cinzel text-base font-bold text-[#4A0E17] flex items-center gap-2">
+                <Link className="w-5 h-5 text-emerald-600" />
+                <span>Link Google Spreadsheet</span>
+              </h4>
             </div>
-          )}
-        </div>
 
-        {/* Config Form */}
-        <form onSubmit={handleSaveConfig} className="space-y-4 pt-2 border-t border-gray-100">
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            
-            {/* Apps Script Web App URL */}
             <div>
-              <label className="block text-xs font-bold text-gray-800 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Google Apps Script Web App URL *</span>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Google Sheet URL or Spreadsheet ID
+              </label>
+              <input
+                type="text"
+                value={spreadsheetIdInput}
+                onChange={(e) => setSpreadsheetIdInput(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs.../edit or Sheet ID"
+                className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-emerald-600 focus:outline-none"
+              />
+              <span className="text-[11px] text-gray-500 mt-1 block">
+                Paste the full browser link of any Google Sheet, or the ID between /d/ and /edit.
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Google Apps Script Web App URL (For Zero-Auth Saving)
               </label>
               <input
                 type="text"
                 value={appsScriptUrlInput}
                 onChange={(e) => setAppsScriptUrlInput(e.target.value)}
                 placeholder="https://script.google.com/macros/s/.../exec"
-                className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono text-gray-900 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
+                className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-emerald-600 focus:outline-none"
               />
               <span className="text-[11px] text-gray-500 mt-1 block">
-                Deploy ചെയ്ത ശേഷം ലഭിക്കുന്ന Web App URL ഇവിടെ പേസ്റ്റ് ചെയ്യുക (Ends with /exec).
+                Deploy ചെയ്ത വെബ് ആപ്പ് ലിങ്ക് (Ends with /exec).
               </span>
             </div>
 
-            {/* Google Spreadsheet URL / ID (Optional Direct Link) */}
-            <div>
-              <label className="block text-xs font-bold text-gray-800 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                <Link className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Google Spreadsheet Link or ID (Optional)</span>
-              </label>
-              <input
-                type="text"
-                value={spreadsheetIdInput}
-                onChange={(e) => setSpreadsheetIdInput(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs.../edit or ID"
-                className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono text-gray-900 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
-              />
-              <span className="text-[11px] text-gray-500 mt-1 block">
-                ഷീറ്റ് നേരിട്ട് ബ്രൗസറിൽ തുറക്കാനും പൊതുവായി റീഡ് ചെയ്യാനും ഉപയോഗിക്കാം.
-              </span>
-            </div>
-
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
-            
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-gray-700">Tab Name:</span>
               <input
                 type="text"
                 value={sheetTabInput}
                 onChange={(e) => setSheetTabInput(e.target.value)}
-                placeholder="Sheet1 or Products"
+                placeholder="Products"
                 className="px-3 py-1.5 bg-gray-50 border border-gray-300 rounded-xl text-xs font-mono w-32 focus:outline-none focus:ring-1 focus:ring-emerald-600"
               />
             </div>
@@ -464,21 +597,43 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
             <button
               type="submit"
               disabled={isSavingConfig}
-              className="px-6 py-2.5 rounded-xl gold-gradient-btn text-xs font-bold uppercase tracking-wider shadow cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-2.5 rounded-xl gold-gradient-btn text-xs font-bold uppercase tracking-wider shadow cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {isSavingConfig ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#4A0E17]" /> : <CheckCircle2 className="w-3.5 h-3.5 text-[#4A0E17]" />}
-              <span>Save &amp; Connect Google Sheet</span>
+              {isSavingConfig ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#4A0E17]" /> : <Check className="w-3.5 h-3.5 text-[#4A0E17]" />}
+              <span>Save &amp; Link Spreadsheet</span>
             </button>
+          </form>
 
+          {/* Auto Sync Toggle */}
+          <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-3 bg-amber-50/50 p-3 rounded-2xl border border-amber-200/60">
+            <div>
+              <span className="text-xs font-bold text-gray-800 block">
+                Automatic Sync on Add (Manual, Excel, CSV)
+              </span>
+              <p className="text-[11px] text-gray-600 mt-0.5">
+                Whenever you add products via form, Excel (.xlsx) or CSV, automatically append to this sheet.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleAutoSync}
+              className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors duration-200 ease-in-out shrink-0 ${
+                autoSync ? 'bg-emerald-600' : 'bg-gray-300'
+              }`}
+            >
+              <div
+                className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                  autoSync ? 'translate-x-6' : 'translate-x-0'
+                }`}
+              />
+            </button>
           </div>
-
-        </form>
+        </div>
 
       </div>
 
-      {/* AUTO-SYNC TOGGLE & DIRECT ACTIONS */}
+      {/* TWO-WAY SYNC CONTROLS */}
       <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm space-y-5">
-        
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-3">
           <div>
             <h4 className="font-cinzel text-base font-bold text-[#4A0E17] flex items-center gap-2">
@@ -498,32 +653,6 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
           </div>
         </div>
 
-        {/* Auto Sync Toggle Banner */}
-        <div className="flex items-center justify-between gap-3 bg-emerald-50/70 p-4 rounded-2xl border border-emerald-200">
-          <div>
-            <span className="text-xs font-bold text-emerald-950 block">
-              Automatic Sync on Add (Manual Products &amp; Excel Import)
-            </span>
-            <p className="text-[11px] text-emerald-800/80 mt-0.5">
-              അഡ്മിൻ പുതിയ പ്രൊഡക്റ്റ് ആഡ് ചെയ്യുമ്പോഴും എക്സൽ ഷീറ്റ് അപ്‌ലോഡ് ചെയ്യുമ്പോഴും ഓട്ടോമാറ്റിക്കായി ഗൂഗിൾ ഷീറ്റിലോട്ട് സേവ് ചെയ്യപ്പെടും.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleToggleAutoSync}
-            className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors duration-200 ease-in-out shrink-0 ${
-              autoSync ? 'bg-emerald-600' : 'bg-gray-300'
-            }`}
-          >
-            <div
-              className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
-                autoSync ? 'translate-x-6' : 'translate-x-0'
-              }`}
-            />
-          </button>
-        </div>
-
-        {/* Sync Buttons */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           
           {/* Pull from Google Sheet */}
@@ -573,20 +702,97 @@ export const GoogleSheetsManager: React.FC<GoogleSheetsManagerProps> = ({
           </div>
 
         </div>
+      </div>
 
-        {/* 13 Standard Columns Info */}
-        <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-[11px] text-gray-600 space-y-1">
-          <strong className="block text-gray-800 font-bold">Standard Google Sheet Columns (13 Columns):</strong>
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {SHEET_HEADERS.map((h, i) => (
-              <span key={i} className="bg-white border border-gray-300 px-2 py-0.5 rounded text-[10px] font-mono text-gray-700">
-                {h}
-              </span>
-            ))}
+      {/* SCRIPT MODAL (OPENED ON 1-CLICK COPY SCRIPT CODE) */}
+      {showScriptModal && (
+        <div className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full border border-gray-300 shadow-2xl p-6 space-y-5 animate-scale-up my-8">
+            
+            <div className="flex items-start justify-between gap-3 border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold">
+                  <CheckCheck className="w-5 h-5 text-emerald-700" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-base text-gray-900 font-cinzel">
+                    Script Code Copied to Clipboard!
+                  </h4>
+                  <p className="text-xs text-gray-500">
+                    Google Apps Script കോഡ് കോപ്പി ആയിട്ടുണ്ട്. ഇനി താഴെ പറയുന്ന സ്റ്റെപ്പുകൾ ചെയ്യുക:
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowScriptModal(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* 4 Step Instructions */}
+            <div className="space-y-2.5 text-xs text-gray-700">
+              <div className="flex items-start gap-2.5 p-2.5 bg-gray-50 rounded-xl">
+                <span className="w-5 h-5 rounded-full bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center justify-center shrink-0">1</span>
+                <div>
+                  <strong className="block text-gray-900">Google Sheet തുറക്കുക</strong>
+                  <span>മുകളിലെ മെനുവിൽ <strong>Extensions ➔ Apps Script</strong> ക്ലിക്ക് ചെയ്യുക.</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 p-2.5 bg-gray-50 rounded-xl">
+                <span className="w-5 h-5 rounded-full bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center justify-center shrink-0">2</span>
+                <div>
+                  <strong className="block text-gray-900">കോഡ് പേസ്റ്റ് ചെയ്യുക</strong>
+                  <span>പഴയ കോഡ് മാറ്റി ഇപ്പൊൾ കോപ്പി ചെയ്ത കോഡ് പേസ്റ്റ് ചെയ്ത് <strong>Save (💾)</strong> ചെയ്യുക.</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 p-2.5 bg-gray-50 rounded-xl">
+                <span className="w-5 h-5 rounded-full bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center justify-center shrink-0">3</span>
+                <div>
+                  <strong className="block text-gray-900">Deploy as Web App</strong>
+                  <span>മുകളിൽ <strong>Deploy ➔ New deployment ➔ Web app</strong> തിരഞ്ഞെടുത്ത് Who has access എന്നത് <strong>"Anyone"</strong> നൽകി Deploy ചെയ്യുക.</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 p-2.5 bg-gray-50 rounded-xl">
+                <span className="w-5 h-5 rounded-full bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center justify-center shrink-0">4</span>
+                <div>
+                  <strong className="block text-gray-900">Web App URL പേസ്റ്റ് ചെയ്യുക</strong>
+                  <span>ലഭിക്കുന്ന Web App URL അഡ്മിൻ പാനലിലെ ബോക്സിൽ നൽകി <strong>"Save &amp; Link"</strong> ക്ലിക്ക് ചെയ്യുക.</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions in Modal */}
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  window.open('https://sheets.new', '_blank');
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs shadow flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>Open Google Sheets</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowScriptModal(false)}
+                className="px-5 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs cursor-pointer"
+              >
+                Done / Close
+              </button>
+            </div>
+
           </div>
         </div>
-
-      </div>
+      )}
 
       {/* CONFIRMATION MODALS */}
       {showPullConfirm && (
