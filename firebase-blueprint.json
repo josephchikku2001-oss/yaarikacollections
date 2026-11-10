@@ -35,8 +35,8 @@
         },
         "imageUrl": {
           "type": "string",
-          "maxLength": 3000,
-          "description": "Primary product image URL"
+          "maxLength": 600000,
+          "description": "Primary product image URL or compressed web photo"
         },
         "fabricDetails": {
           "type": "string",

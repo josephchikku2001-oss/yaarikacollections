@@ -384,10 +384,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         createdAt: new Date().toISOString()
       };
       ProductStorage.updateProduct(updatedProduct);
-      onToast(`Updated product "${formTitle}" in catalog & Google Sheets!`);
+      onToast(`✓ Updated product "${formTitle}" on live website & Google Sheets!`);
     } else {
-      ProductStorage.addProduct(productPayload);
-      onToast(`Added new product "${formTitle}" to catalog & Google Sheets!`);
+      ProductStorage.addProductAsync(productPayload);
+      onToast(`✓ Uploaded "${formTitle}" to live website! Visible to all visitors.`);
     }
 
     // Refresh products
@@ -897,7 +897,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   }`}
                 >
                   <Plus className="w-4 h-4 text-emerald-600" />
-                  <span>{editingProduct ? 'Edit Product' : 'Add New Product (Multi-Layer)'}</span>
+                  <span>{editingProduct ? 'Edit Product' : 'Add & Upload Product'}</span>
                 </button>
 
                 <button

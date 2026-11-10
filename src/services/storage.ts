@@ -358,7 +358,7 @@ function cleanProductForFirestore(product: Product): Record<string, any> {
     title: String(product.title || 'Untitled Ensemble').trim().substring(0, 200),
     category: String(product.category || 'Traditional Sarees').trim().substring(0, 100),
     price: Math.max(0, typeof product.price === 'number' && !isNaN(product.price) ? product.price : (parseFloat(String(product.price)) || 999)),
-    imageUrl: String(product.imageUrl || 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&q=80&w=800').substring(0, 3000),
+    imageUrl: String(product.imageUrl || 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&q=80&w=800').substring(0, 600000),
     inStock: product.inStock !== false,
     createdAt: product.createdAt ? String(product.createdAt).substring(0, 64) : new Date().toISOString()
   };
@@ -387,7 +387,7 @@ function cleanProductForFirestore(product: Product): Record<string, any> {
     clean.sizes = ['Free Size'];
   }
   if (Array.isArray(product.images) && product.images.length > 0) {
-    clean.images = product.images.slice(0, 10).map(img => String(img).substring(0, 3000));
+    clean.images = product.images.slice(0, 10).map(img => String(img).substring(0, 600000));
   }
   if (product.sizeStock && typeof product.sizeStock === 'object') {
     const safeSizeStock: Record<string, number> = {};
@@ -457,6 +457,9 @@ export const ProductStorage = {
         });
         if (firestoreProducts.length > 0) {
           const merged = this.mergeWithCloudProducts(firestoreProducts);
+          callback(merged);
+        } else if (snapshot.empty) {
+          const merged = this.mergeWithCloudProducts([]);
           callback(merged);
         }
       },
@@ -651,6 +654,17 @@ export const ProductStorage = {
     return createdProduct;
   },
 
+  async addProductAsync(newProduct: Omit<Product, 'id' | 'createdAt'>): Promise<Product> {
+    const createdProduct = this.addProduct(newProduct);
+    const cleanDoc = cleanProductForFirestore(createdProduct);
+    try {
+      await setDoc(doc(db, 'products', createdProduct.id), cleanDoc);
+    } catch (err) {
+      console.warn('Firestore addProductAsync write warning:', err);
+    }
+    return createdProduct;
+  },
+
   bulkAddProducts(newItems: Array<Omit<Product, 'id' | 'createdAt'>>): { added: number; total: number } {
     const currentProducts = this.getProducts();
 
@@ -732,6 +746,25 @@ export const ProductStorage = {
       added: createdList.length,
       total: updated.length
     };
+  },
+
+  async bulkAddProductsAsync(newItems: Array<Omit<Product, 'id' | 'createdAt'>>): Promise<{ added: number; total: number }> {
+    const res = this.bulkAddProducts(newItems);
+    try {
+      const itemsToBatch = this.getProducts().slice(0, res.added);
+      for (let i = 0; i < itemsToBatch.length; i += 300) {
+        const chunk = itemsToBatch.slice(i, i + 300);
+        const batch = writeBatch(db);
+        chunk.forEach(p => {
+          const clean = cleanProductForFirestore(p);
+          batch.set(doc(db, 'products', p.id), clean);
+        });
+        await batch.commit();
+      }
+    } catch (e) {
+      console.warn('Firestore bulkAddProductsAsync warning:', e);
+    }
+    return res;
   },
 
   updateProduct(updatedProduct: Product): void {

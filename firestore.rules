@@ -23,7 +23,7 @@ service cloud.firestore {
         data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
         data.category is string && data.category.size() <= 100 &&
         data.price is number && data.price >= 0 &&
-        data.imageUrl is string && data.imageUrl.size() <= 3000 &&
+        data.imageUrl is string && data.imageUrl.size() <= 600000 &&
         data.inStock is bool &&
         (!('description' in data) || (data.description is string && data.description.size() <= 4000)) &&
         (!('fabricDetails' in data) || (data.fabricDetails is string && data.fabricDetails.size() <= 500)) &&

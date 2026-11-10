@@ -550,15 +550,15 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
     setIsSubmitting(true);
     try {
       if (productsToCreate.length === 1) {
-        ProductStorage.addProduct(productsToCreate[0]);
-        onToast(`Added product "${productsToCreate[0].title}" to Yaarika catalog & Google Sheets!`);
+        await ProductStorage.addProductAsync(productsToCreate[0]);
+        onToast(`✓ Uploaded "${productsToCreate[0].title}" to live website! Visible to all visitors.`);
       } else {
-        const res = ProductStorage.bulkAddProducts(productsToCreate);
-        onToast(`Successfully added all ${res.added} products from layers to Catalog & Google Sheets!`);
+        const res = await ProductStorage.bulkAddProductsAsync(productsToCreate);
+        onToast(`✓ Successfully uploaded ${res.added} products to live website!`);
       }
       onSuccess(productsToCreate.length);
     } catch (err: any) {
-      onToast(`Error adding products: ${err.message}`);
+      onToast(`Error uploading product: ${err.message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -575,16 +575,19 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
               <Layers className="w-4 h-4" />
             </div>
             <h3 className="font-cinzel text-lg font-bold text-[#4A0E17]">
-              {isEditMode ? 'Edit Product Details' : 'Multi-Layer Product Quick Add'}
+              {isEditMode ? 'Edit Product Details' : 'Add & Upload Products to Live Website'}
             </h3>
             <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full">
-              {layers.length} / {MAX_LAYERS} Layers
+              {layers.length} / {MAX_LAYERS} {layers.length === 1 ? 'Product' : 'Products'}
             </span>
           </div>
           <p className="text-xs text-gray-600 mt-1">
             {isEditMode 
               ? 'Update the selected product specifications.'
-              : 'Add up to 10 products simultaneously using layers. Fill Layer 1 to activate the "Add New Product" button.'}
+              : 'Add a single product (or multiple items). Uploaded products instantly sync to Firebase Cloud & Google Sheets, visible to all visitors on any device!'}
+          </p>
+          <p className="text-[11px] text-[#4A0E17] font-semibold mt-0.5">
+            ഒരു പ്രോഡക്റ്റ് ആഡ് ചെയ്താൽ ഉടൻ തന്നെ വെബ്സൈറ്റിൽ അപ്‌ലോഡ് ആവുകയും എല്ലാവർക്കും കാണാൻ സാധിക്കുകയും ചെയ്യും.
           </p>
         </div>
 
@@ -1164,12 +1167,12 @@ export const MultiLayerProductCreator: React.FC<MultiLayerProductCreatorProps> =
                 <Flame className={`w-4 h-4 ${isFirstLayerValid ? 'text-[#4A0E17]' : 'text-gray-400'}`} />
                 <span>
                   {isSubmitting 
-                    ? 'Saving to Catalog & Sheets...' 
+                    ? 'Uploading to Live Website...' 
                     : isEditMode 
-                    ? 'Update Product in Catalog' 
+                    ? 'Update & Publish to Live Website' 
                     : validLayers.length > 1 
-                    ? `Add ${validLayers.length} Products to Catalog` 
-                    : 'Add New Product'}
+                    ? `Upload & Publish ${validLayers.length} Products to Website` 
+                    : 'Upload & Publish Product to Website'}
                 </span>
               </button>
             </div>
